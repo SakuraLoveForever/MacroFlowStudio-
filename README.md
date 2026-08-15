@@ -1,5 +1,7 @@
 <div align="center">
 
+**简体中文** | [English](./README_EN.md)
+
 # 🖱️ MacroFlow Studio
 
 **键鼠宏录制与自动化执行工具**
