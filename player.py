@@ -587,7 +587,7 @@ class MacroPlayer:
                 self.on_global_detect_request(action)
         elif kind == "restart_workflow":
             if self.on_restart_workflow_request and self.on_restart_workflow_request(action):
-                # 应用已接管：停止当前工作流并从第一步重新执行。
+                # 应用已接管：停止当前工作流并从目标行重新执行。
                 raise PlaybackStopped()
             # 独立脚本运行时没有“当前工作流”，该固定动作不执行。
             return None

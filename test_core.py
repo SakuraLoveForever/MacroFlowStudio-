@@ -28,7 +28,8 @@ from dialogs import (
     KEY_HINT_CAPTURING, BatchModuleScriptDialog, ClickDialog, CloseAppDialog, GlobalDetectDialog,
     DurationVar, ImageActionDialog, JumpActionDialog, KeyActionDialog, ModalDialog,
     ModulePickerDialog, ModuleReferenceDelayDialog,
-    MouseMoveDialog, OcrActionDialog, OpenAppDialog, RepeatClickDialog, ScreenPointPicker,
+    MouseMoveDialog, OcrActionDialog, OpenAppDialog, RepeatClickDialog, RestartWorkflowTargetDialog,
+    ScreenPointPicker,
     ScreenOffsetPicker, ScreenRegionPicker, ScriptDirectoriesDialog, TemplateRegionFormDialog,
     TemplateRegionManagerDialog, TextActionDialog, activate_main_after_modal, ancestor_windows,
     drag_selection_region, edit_action,
@@ -42,7 +43,7 @@ from dialogs import (
     module_manager_special_action_summary, module_manager_tag,
     pinyin_sort_key, prepend_module_to_scripts,
     remove_module_from_scripts, script_category_for_path,
-    registered_template_options, select_jump_target_label, vk_to_key_name,
+    registered_template_options, restart_workflow_row_options, select_jump_target_label, vk_to_key_name,
     restore_modal_after_overlay, show_floating_notice,
     segment_action_is_blocking, segment_row_label,
     selectable_target_windows,
@@ -72,11 +73,13 @@ from rawinput import RawMouseListener
 from recorder import MacroRecorder
 from storage import (
     BASE_DIR, available_script_path, backup_script, display_path, load_app_settings,
-    load_module_images_dir, load_module_objects, load_script, load_template_regions, load_workflow,
+    load_module_images_dir, load_module_objects, load_module_restart_default_row, load_script,
+    load_template_regions, load_workflow,
     migrate_workflow_templates,
     module_image_inventory,
     registered_module_object, registered_template_region, resolve_path, save_app_settings, save_script,
-    save_module_images_dir, save_module_objects, save_template_regions, save_workflow,
+    save_module_images_dir, save_module_objects, save_module_restart_default_row,
+    save_template_regions, save_workflow,
 )
 from wininput import (
     MACROFLOW_INPUT_TAG, WindowInfo, activate_window, force_english_input, is_cursor_near_window_center,
@@ -173,6 +176,20 @@ class StorageTests(unittest.TestCase):
                 )
             self.assertEqual([row["status"] for row in rows], ["已采用（1 个）", "未采用"])
             self.assertEqual(rows[0]["module_key"], "images/部分/已采用.png")
+
+    def test_module_restart_default_row_round_trips_and_survives_images_dir(self):
+        # 默认跳转行存模块设置文件；保存识图目录不能覆盖该值。
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder)
+            settings_path = base / "module_settings.json"
+            images = base / "images"
+            with patch("storage.MODULE_SETTINGS_PATH", settings_path):
+                self.assertEqual(load_module_restart_default_row(), 0)
+                self.assertEqual(save_module_restart_default_row(3), 3)
+                self.assertEqual(load_module_restart_default_row(), 3)
+                save_module_images_dir(images)
+                self.assertEqual(load_module_restart_default_row(), 3)
+                self.assertEqual(load_module_images_dir(), images.resolve())
 
     def test_same_image_can_back_independent_switch_and_global_modules(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -1867,48 +1884,47 @@ class WorkflowDisplayTests(unittest.TestCase):
         self.assertIn("height=6", source)
         self.assertIn("height=10", source)
 
-    def test_workflow_restart_target_control_uses_stable_row_id(self):
+    def test_restart_resolved_row_prefers_action_then_module_then_default(self):
+        # 「重新执行工作流」跳转行解析：动作级 → 模块级 → 全局默认 → 第 1 行。
         app = MacroFlowApp.__new__(MacroFlowApp)
-        app.workflow = Workflow(
-            steps=[
-                {"script": "scripts/a.json", "step_id": "row-a"},
-                {"script": "scripts/b.json", "step_id": "row-b"},
-            ],
-            restart_target_step_id="row-b",
-        )
-        app.workflow_restart_target_combo = Mock()
-        app.workflow_restart_target_var = Mock()
+        with patch("app.load_module_restart_default_row", return_value=4):
+            self.assertEqual(
+                app._restart_workflow_resolved_row({"restart_workflow_target_row": 3}),
+                3,
+            )
+            app.global_detect_active_module = {"restart_workflow_target_row": 2}
+            self.assertEqual(
+                app._restart_workflow_resolved_row({"type": "restart_workflow"}),
+                2,
+            )
+            app.global_detect_active_module = {}
+            self.assertEqual(
+                app._restart_workflow_resolved_row({"type": "restart_workflow"}),
+                4,
+            )
+            with patch("app.load_module_restart_default_row", return_value=0):
+                self.assertEqual(
+                    app._restart_workflow_resolved_row({"type": "restart_workflow"}),
+                    1,
+                )
+            # 非法值一律视为未设置。
+            app.global_detect_active_module = {"restart_workflow_target_row": "bad"}
+            self.assertEqual(
+                app._restart_workflow_resolved_row(
+                    {"restart_workflow_target_row": "oops"},
+                ),
+                4,
+            )
 
-        app._refresh_workflow_restart_target_control()
-
-        app.workflow_restart_target_var.set.assert_called_once_with("第 2 行 · b")
-        app.workflow_restart_target_combo.configure.assert_called_once_with(
-            values=["第 1 行 · a", "第 2 行 · b"], state="readonly",
-        )
-        self.assertEqual(app.workflow.restart_target_step_id, "row-b")
-
-    def test_workflow_restart_target_selection_is_saved_on_workflow(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.workflow = Workflow()
-        app.workflow_restart_target_ids = {"第 3 行 · c": "row-c"}
-        app.workflow_restart_target_var = Mock()
-        app.workflow_restart_target_var.get.return_value = "第 3 行 · c"
-        app._persist_workflow_draft = Mock()
-        app._set_status = Mock()
-
-        app._on_workflow_restart_target_changed()
-
-        self.assertEqual(app.workflow.restart_target_step_id, "row-c")
-        app._persist_workflow_draft.assert_called_once()
-
-    def test_workflow_restart_target_round_trips_in_model(self):
+    def test_workflow_model_has_no_unified_restart_target(self):
+        # 旧工作流文件里的 restart_target_step_id 不再进入模型（统一跳转已删除）。
         workflow = Workflow.from_dict({
             "name": "测试",
             "steps": [{"script": "a.json", "step_id": "row-a"}],
             "restart_target_step_id": "row-a",
         })
-        self.assertEqual(workflow.restart_target_step_id, "row-a")
-        self.assertEqual(workflow.to_dict()["restart_target_step_id"], "row-a")
+        self.assertFalse(hasattr(workflow, "restart_target_step_id"))
+        self.assertNotIn("restart_target_step_id", workflow.to_dict())
 
     def test_workflow_module_name_reads_existing_nested_action_reference(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
@@ -4546,14 +4562,11 @@ class GlobalDetectTests(unittest.TestCase):
         app._ui.assert_called_once()
 
     def test_on_restart_workflow_request_workflow_restarts(self):
-        # 工作流中：置标志、停播放与全局监控，并轮询等 worker 死后重启。
+        # 工作流中：置标志、解析动作级跳转行、停播放与全局监控，并轮询等 worker 死后重启。
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.current_workflow_step_index = 0
         app.workflow_restart_requested = False
-        app.workflow = Workflow(
-            steps=[{"script": "a.json", "step_id": "row-a"}],
-            restart_target_step_id="row-a",
-        )
+        app.workflow = Workflow(steps=[{"script": "a.json", "step_id": "row-a"}])
         app.player = Mock()
         app.workflow_stop = threading.Event()
         app.worker = None
@@ -4563,11 +4576,11 @@ class GlobalDetectTests(unittest.TestCase):
         app._launch_workflow_restart = Mock()
         result = app._on_restart_workflow_request({
             "type": "restart_workflow",
-            "restart_workflow_target_step_id": "obsolete-action-target",
+            "restart_workflow_target_row": 3,
         })
         self.assertTrue(result)
         self.assertTrue(app.workflow_restart_requested)
-        self.assertEqual(app.workflow_restart_target_step_id, "row-a")
+        self.assertEqual(app.workflow_restart_target_row, 3)
         self.assertTrue(app.workflow_stop.is_set())
         app.player.stop.assert_called_once()
         app._stop_all_global_detect_monitors.assert_called_once()
@@ -4581,17 +4594,16 @@ class GlobalDetectTests(unittest.TestCase):
         app.global_module_workflow_context = True
         app.global_detect_pending_restart = True
         app.workflow_restart_requested = False
-        app.workflow = Workflow(
-            steps=[{"script": "a.json", "step_id": "row-a"}],
-            restart_target_step_id="row-a",
-        )
+        app.workflow = Workflow(steps=[{"script": "a.json", "step_id": "row-a"}])
         app.player = Mock()
         app.workflow_stop = threading.Event()
         app._stop_all_global_detect_monitors = Mock()
         app._ui = Mock()
-        result = app._on_restart_workflow_request({"type": "restart_workflow"})
+        with patch("app.load_module_restart_default_row", return_value=2):
+            result = app._on_restart_workflow_request({"type": "restart_workflow"})
         self.assertTrue(result)
         self.assertTrue(app.workflow_restart_requested)
+        self.assertEqual(app.workflow_restart_target_row, 2)
         app._ui.assert_called_once_with(app._poll_workflow_stop_for_restart_workflow)
 
     def test_poll_workflow_stop_for_restart_waits_for_worker(self):
@@ -4638,7 +4650,7 @@ class GlobalDetectTests(unittest.TestCase):
             {"kind": "script", "script": "b.json", "step_id": "row-b"},
         ])
         app.workflow_restart_requested = True
-        app.workflow_restart_target_step_id = "row-b"
+        app.workflow_restart_target_row = 2
         app.workflow_repeats_snapshot = None
         app.rebuild_workflow_tree = Mock()
         app._persist_workflow_draft = Mock()
@@ -4652,6 +4664,31 @@ class GlobalDetectTests(unittest.TestCase):
             start_index=1, start_repeat=0, resume_action_index=0,
             preserve_global_rearm_locks=True,
         )
+
+    def test_launch_workflow_restart_clamps_row_beyond_workflow_length(self):
+        # 跳转行越界时收敛到工作流最后一行。
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.workflow = Workflow(steps=[
+            {"kind": "script", "script": "a.json"},
+            {"kind": "script", "script": "b.json"},
+        ])
+        app.workflow_restart_requested = True
+        app.workflow_restart_target_row = 99
+        app.workflow_repeats_snapshot = None
+        app.rebuild_workflow_tree = Mock()
+        app._persist_workflow_draft = Mock()
+        app._log = Mock()
+        app._append_mini_step = Mock()
+        app.run_workflow = Mock()
+
+        app._launch_workflow_restart()
+
+        app.run_workflow.assert_called_once_with(
+            start_index=1, start_repeat=0, resume_action_index=0,
+            preserve_global_rearm_locks=True,
+        )
+        # 重启完成后目标行复位，避免影响下一次触发。
+        self.assertEqual(app.workflow_restart_target_row, 1)
 
     def test_workflow_module_enabled_follows_registry_state(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
@@ -11716,6 +11753,85 @@ class TemplateRegionTests(unittest.TestCase):
         self.assertEqual(form.result[2]["start_delay_ms"], 125000)
         notice.assert_not_called()
 
+    def test_form_saves_restart_target_row_for_global_module(self):
+        # 工作流全局模块：选中的行对象写入模块对象的 restart_workflow_target_row。
+        form = self._form(image="images/g.png", region="10,20,300,400")
+        form.category_var.get.return_value = "工作流全局模块"
+        form.restart_target_var = Mock()
+        form.restart_target_var.get.return_value = "第 3 行 · 脚本b"
+        form.restart_target_ids = {"（使用全局默认：第 1 行）": 0, "第 3 行 · 脚本b": 3}
+        with patch("dialogs.show_floating_notice") as notice:
+            form.save()
+        self.assertEqual(form.result[2]["restart_workflow_target_row"], 3)
+        notice.assert_not_called()
+
+    def test_form_saves_restart_default_row_for_script_global_module(self):
+        form = self._form(image="images/g.png", region="10,20,300,400")
+        form.category_var.get.return_value = "脚本全局模块"
+        form.restart_target_var = Mock()
+        form.restart_target_var.get.return_value = "（使用全局默认：第 2 行）"
+        form.restart_target_ids = {"（使用全局默认：第 2 行）": 0}
+        with patch("dialogs.show_floating_notice") as notice:
+            form.save()
+        self.assertEqual(form.result[2]["restart_workflow_target_row"], 0)
+        notice.assert_not_called()
+
+    def test_form_save_restart_custom_row_requires_number(self):
+        form = self._form(image="images/g.png", region="10,20,300,400")
+        form.category_var.get.return_value = "脚本全局模块"
+        form.restart_target_var = Mock()
+        form.restart_target_var.get.return_value = "自定义行号…"
+        form.restart_target_spin_var = Mock()
+        form.restart_target_spin_var.get.return_value = "abc"
+        form.restart_target_ids = {}
+        with patch("dialogs.show_floating_notice") as notice:
+            form.save()
+        notice.assert_called_once()
+        self.assertIn("行号格式错误", notice.call_args.args[1])
+        form.destroy.assert_not_called()
+
+    def test_restart_target_dialog_save_picks_row_object(self):
+        dialog = RestartWorkflowTargetDialog.__new__(RestartWorkflowTargetDialog)
+        dialog.row_ids = {"（使用默认跳转行）": 0, "第 2 行 · 脚本a": 2}
+        dialog.row_var = Mock()
+        dialog.row_var.get.return_value = "第 2 行 · 脚本a"
+        dialog.destroy = Mock()
+        dialog.save()
+        self.assertEqual(dialog.result["restart_workflow_target_row"], 2)
+        dialog.destroy.assert_called_once()
+
+    def test_restart_target_dialog_save_use_default(self):
+        dialog = RestartWorkflowTargetDialog.__new__(RestartWorkflowTargetDialog)
+        dialog.row_ids = {"（使用默认跳转行：第 4 行）": 0}
+        dialog.row_var = Mock()
+        dialog.row_var.get.return_value = "（使用默认跳转行：第 4 行）"
+        dialog.destroy = Mock()
+        dialog.save()
+        self.assertEqual(dialog.result["restart_workflow_target_row"], 0)
+        dialog.destroy.assert_called_once()
+
+    def test_restart_target_dialog_save_custom_row(self):
+        dialog = RestartWorkflowTargetDialog.__new__(RestartWorkflowTargetDialog)
+        dialog.row_ids = {}
+        dialog.row_var = Mock()
+        dialog.row_var.get.return_value = "自定义行号…"
+        dialog.row_spin_var = Mock()
+        dialog.row_spin_var.get.return_value = "7"
+        dialog.destroy = Mock()
+        dialog.save()
+        self.assertEqual(dialog.result["restart_workflow_target_row"], 7)
+
+    def test_restart_workflow_row_options_label_rows(self):
+        labels, mapping = restart_workflow_row_options(
+            [{"kind": "script", "script": "scripts/a.json"},
+             {"kind": "module", "action": {"module_name": "可领取"}}],
+            default_row=2,
+        )
+        self.assertEqual(mapping[labels[0]], 0)
+        self.assertIn("（使用默认跳转行：第 2 行）", labels[0])
+        self.assertEqual(mapping["第 1 行 · a"], 1)
+        self.assertEqual(mapping["第 2 行 · 模块 可领取"], 2)
+
     def test_form_saves_fallback_module_and_click_behavior(self):
         form = self._form(image="images/g.png", region="10,20,300,400")
         form.fallback_module_key_var.get.return_value = "module:fallback"
@@ -12859,10 +12975,33 @@ class TemplateRegionTests(unittest.TestCase):
         self.assertEqual(dialog.action["action_id"], "stable-action")
         dialog.module_name.set.assert_called_once_with("新模块")
 
-    def test_edit_action_restart_workflow_is_noop(self):
-        with patch("dialogs.show_floating_notice") as notice:
-            self.assertIsNone(edit_action(None, {"type": "restart_workflow"}))
-        notice.assert_called_once()
+    def test_edit_action_restart_workflow_opens_target_dialog(self):
+        dialog = Mock()
+        dialog.show.return_value = {
+            "type": "restart_workflow", "restart_workflow_target_row": 5,
+        }
+        with patch("dialogs.RestartWorkflowTargetDialog", return_value=dialog) as dialog_class:
+            updated = edit_action(None, {"type": "restart_workflow"})
+        dialog_class.assert_called_once()
+        self.assertEqual(updated["restart_workflow_target_row"], 5)
+        self.assertEqual(updated["type"], "restart_workflow")
+
+    def test_edit_action_restart_workflow_cancel_keeps_original(self):
+        dialog = Mock()
+        dialog.show.return_value = None
+        with patch("dialogs.RestartWorkflowTargetDialog", return_value=dialog):
+            updated = edit_action(None, {"type": "restart_workflow"})
+        self.assertIsNone(updated)
+
+    def test_segment_row_label_shows_restart_target_row(self):
+        self.assertEqual(
+            segment_row_label({"type": "restart_workflow"}),
+            "重新执行工作流（默认跳转行）",
+        )
+        self.assertEqual(
+            segment_row_label({"type": "restart_workflow", "restart_workflow_target_row": 4}),
+            "重新执行工作流（跳转第 4 行）",
+        )
 
     def _fit_dialog(self, reqw, reqh, screen_w, screen_h, parent=None):
         """构造一个用于 _fit_window_to_content 的 Mock 对话框。"""

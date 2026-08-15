@@ -171,7 +171,6 @@ class Workflow:
     start_at: str = ""
     start_delay_enabled: bool = False
     start_delay_seconds: int = 5
-    restart_target_step_id: str = ""
     version: int = WORKFLOW_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -193,6 +192,5 @@ class Workflow:
             start_at=str(data.get("start_at", "")),
             start_delay_enabled=bool(data.get("start_delay_enabled", False)),
             start_delay_seconds=max(0, min(86400, int(data.get("start_delay_seconds", 5)))),
-            restart_target_step_id=str(data.get("restart_target_step_id", "")),
             version=int(data.get("version", WORKFLOW_VERSION)),
         )

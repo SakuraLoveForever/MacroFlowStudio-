@@ -51,7 +51,7 @@ from recorder import MacroRecorder
 from storage import (
     BASE_DIR, IMAGES_DIR, SCRIPTS_DIR, WORKFLOWS_DIR, available_script_path, backup_script,
     display_path, ensure_dirs, migrate_workflow_templates,
-    load_app_settings, load_script, load_workflow,
+    load_app_settings, load_module_restart_default_row, load_script, load_workflow,
     registered_module_object, registered_template_region, resolve_path, save_app_settings,
     save_script, save_workflow,
     update_module_object,
@@ -555,11 +555,15 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
         detail = f"结束 {name}（{mode}" + ("、" + "、".join(extras) if extras else "") + "）"
         return action_kind_label(kind, "关闭软件"), detail, delay
     if kind == "restart_workflow":
-        return (
-            action_kind_label(kind, "特殊模块"),
-            "重新执行工作流（当前工作流从第 1 步开始；独立运行时跳过）",
-            delay,
+        try:
+            row = max(0, int(action.get("restart_workflow_target_row", 0) or 0))
+        except (TypeError, ValueError):
+            row = 0
+        detail = (
+            f"重新执行工作流（跳转到第 {row} 行；独立运行时跳过）" if row
+            else "重新执行工作流（默认跳转行；独立运行时跳过）"
         )
+        return action_kind_label(kind, "特殊模块"), detail, delay
     if kind == "end_current_script":
         return (
             action_kind_label(kind, "特殊模块"),
@@ -824,11 +828,14 @@ class MacroFlowApp:
         # 普通脚本内嵌全局模块行（触发后跳转行）：跳转播放期间 worker 等待其结束。
         self.standalone_jump_pending = False
         self.standalone_jump_done = threading.Event()
-        # 特殊模块「重新执行工作流」：标志 + 工作流各步次数快照（重启时恢复，
+        # 特殊模块「重新执行工作流」：标志 + 目标行（1 基，运行时按
+        # 动作 → 模块 → 全局默认解析）+ 工作流各步次数快照（重启时恢复，
         # 防止已消费的行在重跑中被跳过）。
         self.workflow_restart_requested = False
-        self.workflow_restart_target_step_id = ""
+        self.workflow_restart_target_row = 1
         self.workflow_repeats_snapshot: dict[int, tuple[int, bool]] | None = None
+        # 正在播放的全局模块代码段所属模块对象（解析模块级重启跳转行用）。
+        self.global_detect_active_module: dict | None = None
         self.workflow_test_mode_active = False
         self.dirty = False
         self.mini_window: tk.Toplevel | None = None
@@ -1052,7 +1059,6 @@ class MacroFlowApp:
         self.workflow_start_delay_seconds_var = DurationVar(
             value=int(self.workflow.start_delay_seconds) * 1000,
         )
-        self.workflow_restart_target_var = tk.StringVar(value="")
         self.workflow_test_mode_var = tk.BooleanVar(value=False)
         self.sound_enabled_var = tk.BooleanVar(value=bool(self.app_settings.get("sound_enabled", True)))
         self.mini_window_enabled_var = tk.BooleanVar(value=bool(self.app_settings.get("mini_window_enabled", True)))
@@ -1737,21 +1743,6 @@ class MacroFlowApp:
         ttk.Button(file_toolbar, text="打开", command=self.open_workflow, style="CompactGhost.TButton").pack(side="left", padx=(5, 0))
         ttk.Button(file_toolbar, text="保存", command=self.save_current_workflow, bootstyle="primary").pack(side="left", padx=(5, 0))
         ttk.Button(file_toolbar, text="打开工作流目录", command=lambda: self.open_folder(WORKFLOWS_DIR), style="CompactGhost.TButton").pack(side="right")
-        restart_group = ttk.Frame(file_toolbar, style="Surface.TFrame")
-        restart_group.pack(side="left", padx=(18, 0))
-        ttk.Label(restart_group, text="重启跳转", style="Muted.TLabel").pack(side="left")
-        self.workflow_restart_target_combo = ttk.Combobox(
-            restart_group, textvariable=self.workflow_restart_target_var,
-            state="disabled", width=36,
-        )
-        self.workflow_restart_target_combo.pack(side="left", padx=(8, 5))
-        self.workflow_restart_target_combo.bind(
-            "<<ComboboxSelected>>", self._on_workflow_restart_target_changed,
-        )
-        self._help_badge(
-            restart_group,
-            "所有“重新执行工作流”统一跳转到这里；脚本、模块和全局模块触发时都使用该目标。",
-        ).pack(side="left")
 
         add_toolbar = ttk.Frame(toolbar, style="Surface.TFrame")
         add_toolbar.pack(fill="x", pady=(7, 0))
@@ -3407,6 +3398,26 @@ class MacroFlowApp:
 
     # 特殊模块「重新执行工作流」：player 线程 hook 只置标志/事件 + _ui 调度，
     # 停止与重启全部由主线程轮询执行（player 单实例守卫）。
+    def _restart_workflow_resolved_row(self, action: dict) -> int:
+        """解析「重新执行工作流」的跳转行：动作 → 模块 → 全局默认 → 第 1 行。
+
+        行号是当前工作流里的 1 基行号（对应工作流树里的行对象）；越界时由
+        _launch_workflow_restart 收敛到首尾。
+        """
+        try:
+            row = max(0, int(action.get("restart_workflow_target_row", 0) or 0))
+        except (TypeError, ValueError):
+            row = 0
+        if not row:
+            module_obj = getattr(self, "global_detect_active_module", None) or {}
+            try:
+                row = max(0, int(module_obj.get("restart_workflow_target_row", 0) or 0))
+            except (TypeError, ValueError):
+                row = 0
+        if not row:
+            row = load_module_restart_default_row()
+        return max(1, row)
+
     def _on_restart_workflow_request(self, action: dict) -> bool:
         in_global_module = bool(
             getattr(self, "global_module_workflow_context", False)
@@ -3420,9 +3431,7 @@ class MacroFlowApp:
             )
             return False
         self.workflow_restart_requested = True
-        self.workflow_restart_target_step_id = str(
-            self.workflow.restart_target_step_id
-        ).strip()
+        self.workflow_restart_target_row = self._restart_workflow_resolved_row(action)
         self.workflow_stop.set()
         self.player.stop()
         self._stop_all_global_detect_monitors()
@@ -3439,21 +3448,15 @@ class MacroFlowApp:
 
     def _launch_workflow_restart(self):
         steps = self._workflow_only_steps()
-        target_step_id = str(getattr(self, "workflow_restart_target_step_id", "")).strip()
-        target_index = next(
-            (
-                index for index, step in enumerate(steps)
-                if str(step.get("step_id", "")).strip() == target_step_id
-            ),
-            0,
-        )
+        target_row = max(1, int(getattr(self, "workflow_restart_target_row", 1) or 1))
+        target_index = min(target_row, len(steps)) - 1 if steps else 0
         snapshot = self.workflow_repeats_snapshot or {}
         for index, step in enumerate(steps):
             saved = snapshot.get(index)
             if saved is not None:
                 step["repeats"], step["unlimited"] = saved
         self.workflow_restart_requested = False
-        self.workflow_restart_target_step_id = ""
+        self.workflow_restart_target_row = 1
         self.global_detect_pending_restart = False
         self.global_detect_end_current_script = False
         self.global_detect_advance_workflow_step = False
@@ -3461,8 +3464,8 @@ class MacroFlowApp:
         self.rebuild_workflow_tree()
         self._persist_workflow_draft()
         target_text = f"第 {target_index + 1} 行" if steps else "工作流开头"
-        self._log(f"特殊模块：重新执行工作流，统一跳转到{target_text}。")
-        self._append_mini_step(f"特殊模块：重新执行工作流，统一跳转到{target_text}。")
+        self._log(f"特殊模块：重新执行工作流，跳转到{target_text}。")
+        self._append_mini_step(f"特殊模块：重新执行工作流，跳转到{target_text}。")
         self.run_workflow(
             start_index=target_index, start_repeat=0, resume_action_index=0,
             preserve_global_rearm_locks=True,
@@ -3497,6 +3500,7 @@ class MacroFlowApp:
         """Execute the triggered global module's script steps, then resume the workflow."""
         self.global_detect_module_running = True
         self.global_module_workflow_context = monitor.get("workflow_resume_snapshot") is not None
+        self.global_detect_active_module = monitor.get("module")
         try:
             segment = list(monitor.get("segment") or [])
             if monitor.get("segment_ready") and segment:
@@ -3571,6 +3575,7 @@ class MacroFlowApp:
         finally:
             self.global_detect_module_running = False
             self.global_module_workflow_context = False
+            self.global_detect_active_module = None
             # 模块步骤已执行完并恢复工作流：检测保持运行，条件仍满足则再次触发。
             monitor["segment_ready"] = False
             monitor["triggered"] = False
@@ -3581,6 +3586,7 @@ class MacroFlowApp:
     def _play_standalone_global_body(self, monitor: dict):
         """单独执行全局脚本：触发后重新播放语句体，播放完继续检测。"""
         self.global_detect_module_running = True
+        self.global_detect_active_module = monitor.get("module")
         try:
             segment = list(monitor.get("segment") or [])
             if monitor.get("segment_ready") and segment:
@@ -3629,6 +3635,7 @@ class MacroFlowApp:
             self._ui(self._log, f"全局脚本动作执行失败：{exc}")
         finally:
             self.global_detect_module_running = False
+            self.global_detect_active_module = None
             monitor["segment_ready"] = False
             # 语句体已执行完：检测保持运行，条件仍满足则再次触发。
             monitor["triggered"] = False
@@ -6004,39 +6011,6 @@ class MacroFlowApp:
         )
         return f"模块 {name or '未设置'}"
 
-    def _workflow_restart_target_options(self) -> list[tuple[str, str]]:
-        options = []
-        for index, step in enumerate(self._workflow_only_steps()):
-            step_id = str(step.get("step_id", "")).strip()
-            if step_id:
-                options.append((f"第 {index + 1} 行 · {self._workflow_step_name(step)}", step_id))
-        return options
-
-    def _refresh_workflow_restart_target_control(self) -> None:
-        combo = getattr(self, "workflow_restart_target_combo", None)
-        target_var = getattr(self, "workflow_restart_target_var", None)
-        if combo is None or target_var is None:
-            return
-        options = self._workflow_restart_target_options()
-        self.workflow_restart_target_ids = {label: step_id for label, step_id in options}
-        labels = [label for label, _step_id in options]
-        saved_id = str(self.workflow.restart_target_step_id).strip()
-        selected = next(
-            (label for label, step_id in options if step_id == saved_id),
-            labels[0] if labels else "",
-        )
-        self.workflow.restart_target_step_id = self.workflow_restart_target_ids.get(selected, "")
-        target_var.set(selected)
-        combo.configure(values=labels, state="readonly" if labels else "disabled")
-
-    def _on_workflow_restart_target_changed(self, _event=None) -> None:
-        label = self.workflow_restart_target_var.get()
-        target_id = getattr(self, "workflow_restart_target_ids", {}).get(label, "")
-        self.workflow.restart_target_step_id = target_id
-        self._persist_workflow_draft()
-        if target_id:
-            self._set_status(f"重新执行工作流将统一跳转到：{label}", "success")
-
     def rebuild_workflow_tree(self):
         self.workflow_tree.delete(*self.workflow_tree.get_children())
         workflow_steps = self._workflow_only_steps()
@@ -6097,7 +6071,6 @@ class MacroFlowApp:
         else:
             self.empty_workflow_hint.place(relx=0.5, rely=0.45, anchor="center")
         self._autosize_tree_column(self.workflow_tree, "script", 500, script_labels)
-        self._refresh_workflow_restart_target_control()
         self.rebuild_global_tree()
 
     def rebuild_global_tree(self):

@@ -22,11 +22,11 @@ from models import (
 from player import running_process_names
 from storage import (
     BASE_DIR, IMAGES_DIR, SCRIPTS_DIR, display_path,
-    load_app_settings, load_module_images_dir, load_module_objects, load_script,
-    load_template_regions,
+    load_app_settings, load_module_images_dir, load_module_objects, load_module_restart_default_row,
+    load_script, load_template_regions,
     module_image_inventory, module_objects_by_category,
-    registered_module_object, resolve_path, save_module_objects, save_template_regions,
-    save_module_images_dir, save_script, update_module_object,
+    registered_module_object, resolve_path, save_module_images_dir, save_module_objects,
+    save_module_restart_default_row, save_template_regions, save_script, update_module_object,
 )
 from wininput import (
     WindowInfo, enum_windows, get_cursor_pos, get_virtual_screen_rect,
@@ -2001,6 +2001,192 @@ def segment_action_is_blocking(action: dict) -> bool:
     return bool(action.get("blocking"))
 
 
+def workflow_step_label(step: dict) -> str:
+    """工作流树里一行对象的显示名（与 app._workflow_step_name 保持一致）。"""
+    if step.get("kind") != "module":
+        raw = str(step.get("script", ""))
+        return Path(raw.replace("\\", "/")).stem or raw or "未设置脚本"
+    action = step.get("action") if isinstance(step.get("action"), dict) else {}
+    special_type = str(action.get("type", ""))
+    if special_type == "restart_workflow":
+        return "重新执行工作流"
+    if special_type == "end_current_script":
+        return END_CURRENT_SCRIPT_LABEL
+    if special_type == "jump_current_script_last":
+        return "跳转到当前脚本最后一行"
+    module_key = str(action.get("module_key") or action.get("template") or "").strip()
+    module_obj = registered_module_object(module_key)
+    name = (
+        str(action.get("module_name", "")).strip()
+        or (str(module_obj.get("name", "")).strip() if module_obj else "")
+        or Path(module_key.replace("\\", "/")).stem
+    )
+    return f"模块 {name or '未设置'}"
+
+
+RESTART_USE_DEFAULT_ROW_LABEL = "（使用默认跳转行）"
+
+
+def restart_workflow_row_options(workflow_steps: list[dict], default_row: int = 0,
+                                 default_label: str = RESTART_USE_DEFAULT_ROW_LABEL,
+                                 ) -> tuple[list[str], dict[str, int]]:
+    """构建「重新执行工作流」跳转行下拉选项（第 N 行 · 名称，行号 1 基）。
+
+    返回 (labels, label→row 映射)；row 0 表示使用默认跳转行。default_row 非 0
+    时在默认项里标注当前默认行号，方便用户知道不选时跳到哪里。
+    """
+    default_row = max(0, int(default_row or 0))
+    first_label = f"（使用默认跳转行：第 {default_row} 行）" if default_row else default_label
+    mapping = {first_label: 0}
+    for index, step in enumerate(workflow_steps):
+        label = f"第 {index + 1} 行 · {workflow_step_label(step)}"
+        mapping[label] = index + 1
+    return list(mapping), mapping
+
+
+def _app_workflow_steps(parent) -> list[dict]:
+    """沿父窗口链找主应用，取当前工作流的行对象列表（不含全局模块行）。"""
+    window = parent
+    seen = set()
+    while window is not None and len(seen) < 20:
+        identity = id(window)
+        if identity in seen:
+            break
+        seen.add(identity)
+        app = getattr(window, "_macroflow_app", None)
+        workflow = getattr(app, "workflow", None)
+        if workflow is not None:
+            steps = getattr(workflow, "steps", None)
+            if isinstance(steps, list):
+                return [step for step in steps if step.get("kind") != "global_module"]
+        try:
+            window = window.master
+        except (AttributeError, tk.TclError):
+            break
+    return []
+
+
+class RestartWorkflowTargetDialog(ModalDialog):
+    """配置「重新执行工作流」动作的跳转目标：行对象或使用默认跳转行。
+
+    row=0 表示使用默认：先看所属模块的「重新执行工作流跳转行对象」设置，
+    再回落全局默认跳转行（模块设置里「设为默认」），最后从工作流第 1 行开始。
+    """
+
+    def __init__(self, parent, action: dict | None = None,
+                 workflow_steps: list[dict] | None = None,
+                 default_row: int = 0):
+        super().__init__(parent, "重新执行工作流跳转目标", 600, 300)
+        self.workflow_steps = list(workflow_steps if workflow_steps is not None
+                                   else _app_workflow_steps(parent))
+        self.default_row = max(0, int(default_row or load_module_restart_default_row()))
+        try:
+            saved_row = max(0, int((action or {}).get("restart_workflow_target_row", 0) or 0))
+        except (TypeError, ValueError):
+            saved_row = 0
+        self.row_var = tk.StringVar()
+        self.row_ids: dict[str, int] = {}
+        self.row_spin_var = tk.StringVar(value=str(saved_row if saved_row > 0 else 1))
+        self._reload_options(selected_row=saved_row)
+
+        body = ttk.Frame(self, padding=20)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+        ttk.Label(body, text="跳转到").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=(0, 8))
+        self.row_combo = ttk.Combobox(
+            body, textvariable=self.row_var, values=self.row_labels,
+            state="readonly", width=46,
+        )
+        self.row_combo.grid(row=0, column=1, sticky="ew", pady=(0, 8))
+        self.row_combo.bind("<<ComboboxSelected>>", self._on_row_selected)
+        ttk.Label(
+            body,
+            text=("选择工作流里的行对象，触发后从该行重新执行工作流；"
+                  "选“使用默认跳转行”时按模块设置 / 全局默认决定。"
+                  "未打开工作流时可勾选“自定义行号…”直接输入。"),
+            foreground=COLOR_MUTED, wraplength=540,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        row_frame = ttk.Frame(body)
+        row_frame.grid(row=2, column=1, sticky="w", pady=(10, 0))
+        ttk.Label(row_frame, text="行号", foreground=COLOR_MUTED).pack(side="left")
+        self.row_spin = ttk.Spinbox(
+            row_frame, from_=1, to=99999, textvariable=self.row_spin_var,
+            width=8,
+        )
+        self.row_spin.pack(side="left", padx=(8, 0))
+        self._on_row_selected()
+        default_frame = ttk.Frame(body)
+        default_frame.grid(row=3, column=0, columnspan=2, sticky="w", pady=(14, 0))
+        ttk.Button(
+            default_frame, text="设为默认", command=self._set_current_as_default,
+        ).pack(side="left")
+        self.default_label = ttk.Label(
+            default_frame,
+            text=self._default_hint(), foreground=COLOR_MUTED,
+        )
+        self.default_label.pack(side="left", padx=(10, 0))
+        buttons = ttk.Frame(body)
+        buttons.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(20, 0))
+        ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+
+    def _default_hint(self) -> str:
+        if not self.default_row:
+            return "全局默认：未设置（按第 1 行处理）"
+        return f"全局默认：第 {self.default_row} 行"
+
+    def _reload_options(self, selected_row: int = 0):
+        labels, self.row_ids = restart_workflow_row_options(
+            self.workflow_steps, self.default_row,
+        )
+        self.row_labels = labels + ["自定义行号…"]
+        selected = next(
+            (label for label, row in self.row_ids.items() if row == selected_row),
+            "自定义行号…" if not self.workflow_steps else self.row_labels[0],
+        )
+        self.row_var.set(selected)
+
+    def _on_row_selected(self, _event=None):
+        custom = self.row_var.get() == "自定义行号…"
+        if not custom and not self.workflow_steps:
+            self.row_var.set("自定义行号…")
+            custom = True
+        self.row_spin.configure(state="normal" if custom else "readonly")
+
+    def _set_current_as_default(self):
+        row = self._current_row()
+        if not row:
+            show_floating_notice(self, "不能设为默认", "请先选择或输入一个具体行号。")
+            return
+        self.default_row = save_module_restart_default_row(row)
+        self.default_label.configure(text=self._default_hint())
+        self.row_var.set(self.row_labels[0])
+        self.row_spin_var.set(str(self.default_row))
+        self._on_row_selected()
+        show_floating_notice(self, "已设为默认", f"「重新执行工作流」默认跳转到第 {self.default_row} 行。")
+
+    def _current_row(self) -> int:
+        label = self.row_var.get()
+        if label in self.row_ids:
+            return self.row_ids[label]
+        try:
+            return max(1, int(self.row_spin_var.get()))
+        except (TypeError, ValueError):
+            return 0
+
+    def save(self):
+        label = self.row_var.get()
+        row = self.row_ids.get(label, 0)
+        if not row and label == "自定义行号…":
+            try:
+                row = max(1, int(self.row_spin_var.get()))
+            except (TypeError, ValueError):
+                show_floating_notice(self, "行号格式错误", "请输入 1–99999 之间的行号。")
+                return
+        self.result = {"type": "restart_workflow", "restart_workflow_target_row": row}
+        self.destroy()
+
+
 def segment_row_label(action: dict) -> str:
     """代码段列表里一条动作的摘要文本（仅展示用）。"""
     kind = action.get("type", "")
@@ -2031,7 +2217,11 @@ def segment_row_label(action: dict) -> str:
     if kind == "notice":
         return f"提醒 {action.get('text', '')}"
     if kind == "restart_workflow":
-        return "重新执行工作流"
+        try:
+            row = max(0, int(action.get("restart_workflow_target_row", 0) or 0))
+        except (TypeError, ValueError):
+            row = 0
+        return "重新执行工作流" + (f"（跳转第 {row} 行）" if row else "（默认跳转行）")
     if kind == "end_current_script":
         return END_CURRENT_SCRIPT_LABEL
     if kind == "jump_current_script_last":
@@ -2058,7 +2248,8 @@ class TemplateRegionFormDialog(ModalDialog):
     def __init__(self, parent, old_key: str = "", region: list[int] | None = None,
                  category: str = "switch", object_dict: dict | None = None,
                  segment_depth: int = 0, initial_image: str = "",
-                 images_dir: str | Path | None = None):
+                 images_dir: str | Path | None = None,
+                 workflow_steps: list[dict] | None = None):
         super().__init__(
             parent, "编辑模块对象" if old_key else "新增模块对象", 620, 760,
             align_top=True, defer_show=True,
@@ -2190,6 +2381,23 @@ class TemplateRegionFormDialog(ModalDialog):
         )
         self.not_found_timeout_var = duration_var(obj.get("not_found_timeout_ms", 3000))
         self.timeout_segment = [dict(item) for item in obj.get("on_timeout_actions") or []]
+        # 「重新执行工作流」跳转行对象：模块级设置（0 = 使用全局默认）。
+        self.workflow_steps = list(
+            workflow_steps if workflow_steps is not None else _app_workflow_steps(parent)
+        )
+        self.restart_default_row = max(0, int(load_module_restart_default_row()))
+        try:
+            saved_restart_row = max(
+                0, int(obj.get("restart_workflow_target_row", 0) or 0),
+            )
+        except (TypeError, ValueError):
+            saved_restart_row = 0
+        self.restart_target_var = tk.StringVar()
+        self.restart_target_ids: dict[str, int] = {}
+        self.restart_target_spin_var = tk.StringVar(
+            value=str(saved_restart_row if saved_restart_row > 0 else 1),
+        )
+        self._reload_restart_target_options(selected_row=saved_restart_row)
         # 表单行数多，小屏 / 高 DPI（打包版按真实 DPI 渲染）下固定高度窗口会把
         # 底部的延时、识别成功后动作、点击按钮等行挤出窗口且没有滚动条（用户
         # 报告“相似度、检测间隔、延时、动作、点击按钮等都没有输入的地方”）。
@@ -2451,6 +2659,14 @@ class TemplateRegionFormDialog(ModalDialog):
             "仅选择“自定义框选区域”时使用；识别成功后点击该区域中心。",
         )
         row += 1
+        self.row_restart_target = self._labeled_row(
+            body, row, "重新执行工作流跳转行对象",
+            self._build_restart_target_control,
+            "仅工作流全局 / 脚本全局模块使用。触发「重新执行工作流」时跳到所选行对象"
+            "重新执行；选“使用默认跳转行”时用全局默认（点“设为默认”把当前选择存为"
+            "全局默认）。未打开工作流时选“自定义行号…”直接输入行号。",
+        )
+        row += 1
         self.segment_section_heading = self._section_heading(body, row, "附加代码段")
         row += 1
         self.row_run_code_after_action = self._labeled_row(
@@ -2654,6 +2870,84 @@ class TemplateRegionFormDialog(ModalDialog):
         ttk.Label(row, text=second_label).grid(row=0, column=3, padx=(6, 0), sticky="w")
         return row
 
+    def _build_restart_target_control(self, frame):
+        """「重新执行工作流」跳转行对象：行下拉 + 自定义行号 + 设为默认。"""
+        row = ttk.Frame(frame)
+        self.restart_target_combo = ttk.Combobox(
+            row, textvariable=self.restart_target_var,
+            values=self.restart_target_labels, state="readonly", width=34,
+        )
+        self.restart_target_combo.pack(side="left")
+        self.restart_target_combo.bind(
+            "<<ComboboxSelected>>", self._on_restart_target_row_selected,
+        )
+        self.restart_target_spin = ttk.Spinbox(
+            row, from_=1, to=99999, textvariable=self.restart_target_spin_var, width=7,
+        )
+        self.restart_target_spin.pack(side="left", padx=(6, 0))
+        ttk.Button(
+            row, text="设为默认",
+            command=self._set_restart_target_default,
+        ).pack(side="left", padx=(10, 0))
+        self._on_restart_target_row_selected()
+        return row
+
+    def _reload_restart_target_options(self, selected_row: int = 0):
+        labels, self.restart_target_ids = restart_workflow_row_options(
+            self.workflow_steps, self.restart_default_row,
+            default_label="（使用全局默认）",
+        )
+        self.restart_target_labels = labels + ["自定义行号…"]
+        selected = next(
+            (label for label, row in self.restart_target_ids.items() if row == selected_row),
+            "自定义行号…" if not self.workflow_steps else self.restart_target_labels[0],
+        )
+        self.restart_target_var.set(selected)
+        combo = getattr(self, "restart_target_combo", None)
+        if combo is not None:
+            combo.configure(values=self.restart_target_labels)
+
+    def _on_restart_target_row_selected(self, _event=None):
+        custom = self.restart_target_var.get() == "自定义行号…"
+        if not custom and not self.workflow_steps:
+            self.restart_target_var.set("自定义行号…")
+            custom = True
+        self.restart_target_spin.configure(state="normal" if custom else "readonly")
+
+    def _restart_target_label(self) -> str:
+        var = getattr(self, "restart_target_var", None)
+        return str(var.get()) if var is not None else ""
+
+    def _restart_target_is_custom(self) -> bool:
+        return self._restart_target_label() == "自定义行号…"
+
+    def _restart_target_current_row(self) -> int:
+        label = self._restart_target_label()
+        ids = getattr(self, "restart_target_ids", None) or {}
+        if label in ids:
+            return int(ids[label])
+        if label == "自定义行号…":
+            spin = getattr(self, "restart_target_spin_var", None)
+            try:
+                return max(1, int(spin.get())) if spin is not None else 0
+            except (TypeError, ValueError):
+                return 0
+        return 0
+
+    def _set_restart_target_default(self):
+        row = self._restart_target_current_row()
+        if not row:
+            show_floating_notice(self, "不能设为默认", "请先选择或输入一个具体行号。")
+            return
+        self.restart_default_row = save_module_restart_default_row(row)
+        current = self._restart_target_current_row()
+        self._reload_restart_target_options(selected_row=current)
+        self._on_restart_target_row_selected()
+        show_floating_notice(
+            self, "已设为默认",
+            f"「重新执行工作流」默认跳转到第 {self.restart_default_row} 行。",
+        )
+
     def _toggle_sections(self, _event=None):
         after = self.after_action_var.get()
         category = self.category_var.get()
@@ -2721,6 +3015,10 @@ class TemplateRegionFormDialog(ModalDialog):
         self._set_row(
             self.row_hold,
             not direct_mode and category in ("工作流全局模块", "脚本全局模块"),
+        )
+        self._set_row(
+            getattr(self, "row_restart_target", None),
+            category in ("工作流全局模块", "脚本全局模块"),
         )
         self._toggle_hold_control()
         self._set_row(
@@ -3327,6 +3625,12 @@ class TemplateRegionFormDialog(ModalDialog):
             "读取数字" if number_mode else
             "无需识图" if direct_mode else self._default_name_for_image(template_key)
         )
+        restart_target_row = 0
+        if self.category_var.get() in ("工作流全局模块", "脚本全局模块"):
+            restart_target_row = self._restart_target_current_row()
+            if self._restart_target_is_custom() and not restart_target_row:
+                show_floating_notice(self, "行号格式错误", "请输入 1–99999 之间的行号。")
+                return
         module_key = self.old_key or f"module:{uuid.uuid4().hex}"
         module_dict = {
             "category": {
@@ -3371,6 +3675,7 @@ class TemplateRegionFormDialog(ModalDialog):
             "run_code_on_timeout": run_code_on_timeout,
             "not_found_timeout_ms": not_found_timeout,
             "on_timeout_actions": [] if number_mode else self.timeout_segment,
+            "restart_workflow_target_row": restart_target_row,
             "wait_text_absent": False if direct_mode or number_mode else bool(self.wait_text_absent_var.get()),
         }
         if text_mode:
@@ -6550,13 +6855,16 @@ def edit_action(parent, action: dict, all_actions: list[dict] | None = None,
         return updated
 
     kind = action.get("type")
-    if kind in ("restart_workflow", "end_current_script", "jump_current_script_last"):
+    if kind == "restart_workflow":
+        return preserve_identity(
+            RestartWorkflowTargetDialog(parent, action).show(),
+        )
+    if kind in ("end_current_script", "jump_current_script_last"):
         message = (
             f"{END_CURRENT_SCRIPT_LABEL}，无需配置。"
-            if kind == "end_current_script" else "重新执行工作流无需配置。"
+            if kind == "end_current_script" else
+            "执行到这里时会离开模块代码段，并从当前脚本最后一行继续，无需配置。"
         )
-        if kind == "jump_current_script_last":
-            message = "执行到这里时会离开模块代码段，并从当前脚本最后一行继续，无需配置。"
         show_floating_notice(parent, "特殊模块", message)
         return None
     if kind == "jump":

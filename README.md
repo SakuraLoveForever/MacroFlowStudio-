@@ -1,16 +1,16 @@
 <div align="center">
 
-**简体中文** | [English](./README_EN.md)
+[简体中文](./README_CN.md) | **English**
 
 # 🖱️ MacroFlow Studio
 
-**键鼠宏录制与自动化执行工具**
+**Keyboard & Mouse Macro Recording and Automation Tool**
 
-把录制或编辑的键鼠操作保存为脚本，用**识图 / 文字识别**做判断，按**工作流**组织多个脚本按次数自动执行。
+Record or edit keyboard/mouse actions into scripts, use **image matching / text recognition (OCR)** as decision conditions, and organize multiple scripts into **workflows** that run automatically for a set number of times.
 
 ![Version](https://img.shields.io/badge/Version-v1.0.0-4B8BBE?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?style=flat-square)
-![Language](https://img.shields.io/badge/Language-zh--CN-EA4335?style=flat-square)
+![Language](https://img.shields.io/badge/Language-English-0078D6?style=flat-square)
 ![OCR](https://img.shields.io/badge/OCR-PaddleOCR%20Offline-FF6F00?style=flat-square)
 ![Build](https://img.shields.io/badge/Build-PyInstaller%206.20-8A2BE2?style=flat-square)
 
@@ -18,228 +18,229 @@
 
 ---
 
-## ✨ 功能亮点
+## ✨ Highlights
 
 | | |
 |---|---|
-| 🎮 **智能轨迹识别** | 鼠标锁定在窗口中央时记录原始相对轨迹（游戏视角转向，高频采样 ≤16 ms），离开窗口自动恢复桌面坐标 |
-| 🧩 **动作类型丰富** | 14+ 种动作：键盘 / 鼠标 / 滚轮 / 识图 / OCR / 跳转 / 引用脚本 / 启停软件 / 特殊模块 |
-| 🔍 **识图 + OCR 双引擎** | 模板匹配找固定图案，PaddleOCR 离线读变化文字（中文数字识别准确） |
-| 🗂️ **模块对象仓库** | 识别设置可复用：切换 / 全局 / 特殊模块，代码段、备用识别、读取数字 |
-| ⚙️ **工作流编排** | 多脚本按次数执行，全局模块持续检测，断点恢复，测试模式 |
-| 🛡️ **强制专注模式** | 系统级输入锁 + 自动英语输入法，异常时自动释放按键 |
+| 🎮 **Smart track recording** | Records raw relative mouse movement while the cursor is locked at the window center (first-person view turning, sampled at ≤16 ms); automatically falls back to desktop coordinates when the cursor leaves the window |
+| 🧩 **Rich action set** | 14+ action types: keyboard / mouse / wheel / image match / OCR / jump / script reference / app launch & close / special modules |
+| 🔍 **Image match + OCR dual engines** | Template matching for fixed patterns; offline PaddleOCR reads changing text (accurate Chinese & digits) |
+| 🗂️ **Module object repository** | Reusable recognition settings: switch / global / special modules, code segments, fallback recognition, number reading |
+| ⚙️ **Workflow orchestration** | Run multiple scripts by repeat count, global modules keep scanning, breakpoint resume, test mode |
+| 🛡️ **Focus lock mode** | System-level input lock + automatic English input method; releases held keys on abnormal exit |
 
 ---
 
-## 📦 安装与使用
+## 📦 Installation & Usage
 
-1. 下载最新版安装包：**[MacroFlowStudio_v1.0.0_win64.zip](https://github.com/SakuraLoveForever/MacroFlowStudio-/releases)**（约 230 MB）
-2. 解压后**整个文件夹一起拷贝**即可使用（`paddle_ocr` 目录必须与 exe 保持同目录）
-3. 双击 `MacroFlowStudio.exe` 启动；设置保存在 exe 同目录 `app_settings.json`
+1. Download the latest release: **[MacroFlowStudio_v1.0.0_win64.zip](https://github.com/SakuraLoveForever/MacroFlowStudio-/releases)** (~230 MB)
+2. Extract — **copy the whole folder** (`paddle_ocr` must stay in the same directory as the exe)
+3. Run `MacroFlowStudio.exe`; settings are stored in `app_settings.json` next to the exe
 
-> ⚠️ `paddle_ocr`（离线 OCR 引擎与模型）首次使用"识别文字"时才按需加载，**删除后 OCR 不可用**；该目录包含 paddleocr 的全部运行依赖，请勿删减。
+> ⚠️ `paddle_ocr` (offline OCR engine & models) is loaded on demand the first time you use "Recognize Text". **OCR will not work without it**; it contains all runtime dependencies of paddleocr — do not remove anything.
 
-## 🚀 快速开始
+## 🚀 Quick Start
 
-| 步骤 | 操作 |
+| Step | Action |
 |---|---|
-| 1️⃣ 绑定窗口 | 目标软件是游戏时，先点击"选择窗口"绑定（绑定后相对轨迹自动识别为游戏转向） |
-| 2️⃣ 开始录制 | 按 `F8`，录制时主窗口自动隐藏（可改） |
-| 3️⃣ 执行脚本 | 按 `F9`，执行前自动把目标窗口置为前台 |
-| 4️⃣ 紧急停止 | 按 `F12`，随时中断 |
+| 1️⃣ Bind window | If the target app is a game, click "Select Window" first (relative tracks are then treated as in-game view turning) |
+| 2️⃣ Start recording | Press `F8`; the main window hides automatically during recording (configurable) |
+| 3️⃣ Run script | Press `F9`; the target window is brought to the foreground automatically |
+| 4️⃣ Emergency stop | Press `F12` at any time |
 
-## 🎮 录制与回放
+## 🎮 Recording & Playback
 
-- **智能轨迹识别**：鼠标锁在窗口中央时记录原始相对轨迹（游戏视角转向，高频采样 ≤16 ms）；离开目标窗口后恢复普通桌面坐标（默认间隔 20 ms，可调 10–500 ms）
-- 每次开始录制前自动把目标窗口切换为英语（美国）输入法；F8 新录制自动与已打开脚本分离，保存时创建不重名的新脚本
-- **回放**：支持从指定行开始、按次数重复、断点恢复、连续点击、点击鼠标当前位置
+- **Smart track recording**: records raw relative movement while the cursor is locked at the window center (game view turning, sampled at ≤16 ms); desktop coordinates resume when the cursor leaves the target window (default interval 20 ms, configurable 10–500 ms)
+- Automatically switches the target window to English (US) input method before recording; `F8` always starts a fresh recording detached from the currently open script, saved under a new non-conflicting name
+- **Playback**: start from a specific line, repeat counts, breakpoint resume, multi-click, click at current cursor position
 
-## 🧩 脚本编辑
+## 🧩 Script Editor
 
-"脚本编辑"页支持插入以下动作，双击动作可编辑，按住 Shift/Ctrl 多选：
+Insert the following actions on the Script Editor page; double-click an action to edit, hold Shift/Ctrl to multi-select:
 
-| 动作 | 说明 |
+| Action | Description |
 |---|---|
-| ⏱️ 延时 | 等待固定毫秒数 |
-| ⌨️ 键盘 / 敲击 | 按下/松开/敲击按键，插入时可按键自动检测 |
-| 📝 文本 | 输入文字 |
-| 🖱️ 鼠标移动 / 按键 / 点击 / 连续点击 | 屏幕点选记录坐标，点击可选左/右/中键 |
-| 🎡 滚轮 | 横向/纵向滚动，指定位置 |
-| 🖼️ 识图 | 模板匹配找图（见下） |
-| 🔤 识别文字 | PaddleOCR 离线识别区域文字（见下） |
-| 💬 浮动提醒 / 注释 | 屏幕提示 / 备忘文字 |
-| 🔗 引用脚本 | 实时读取另一脚本执行（内嵌执行，不跳转） |
-| 🚀 打开 / 关闭软件 | 启动程序（带参数）/ 优雅或强制结束进程 |
-| 🧭 跳转 | 跳转到目标动作行、脚本开头或脚本结尾 |
-| 📌 前置窗口 | 执行前把绑定窗口置前 |
-| ⭐ 特殊模块 | 重新执行工作流 / 结束当前最里层脚本并继续 / 跳到脚本实际最后一行 |
-| 🧰 模块引用 | 插入已保存的模块对象（见"模块对象"） |
+| ⏱️ Delay | Wait a fixed number of milliseconds |
+| ⌨️ Keyboard / key press | Press / release / tap keys; key can be auto-detected on insert |
+| 📝 Text | Type text |
+| 🖱️ Mouse move / button / click / multi-click | Pick coordinates on screen; left / right / middle button |
+| 🎡 Wheel | Horizontal / vertical scroll at a given position |
+| 🖼️ Image match | Template matching (see below) |
+| 🔤 OCR text | Offline region text recognition (see below) |
+| 💬 Floating notice / comment | On-screen reminder / note text |
+| 🔗 Script reference | Load and run another script in place (embedded execution, no jump) |
+| 🚀 Open / close app | Launch a program (with args) / gracefully or forcefully terminate a process |
+| 🧭 Jump | Jump to a target action line, script start, or script end |
+| 📌 Foreground window | Bring the bound window to the foreground before execution |
+| ⭐ Special modules | Restart workflow / end the innermost script and continue / jump to the actual last line |
+| 🧰 Module reference | Insert a saved module object (see "Module Objects") |
 
-编辑操作：撤销 / 重做、向下复制（支持多选）、从此运行（跳过前面动作直接试运行）、保存后清除撤销历史。
+Editing: undo / redo, duplicate down (multi-select supported), run from here (trial run skipping earlier actions), clear undo history after save.
 
-## 🔍 识图与文字识别
+## 🔍 Image Matching & OCR
 
-**模板匹配识图**（找固定图案）：
+**Template matching** (for fixed patterns):
 
-- **区域**：全屏 / 绑定窗口 / 自定义区域（按住左键拖框选）
-- **阈值**：相似度下限，模板背景会变色时开启"忽略背景"只按笔画匹配
-- **超时**：等待超时毫秒数 + 检测间隔，超时后继续 / 跳转指定行 / 停止
-- **找到后**：继续 / 点击（识图区域中心或自定义坐标）/ 跳转指定行 / 直接结束当前脚本执行工作流下一项
-- **二次识别**：命中后可选另一张模板再次确认
+- **Region**: full screen / bound window / custom region (drag-select with the left button)
+- **Threshold**: minimum similarity; enable "ignore background" when the template background changes color to match strokes only
+- **Timeout**: wait timeout in ms + polling interval; on timeout: continue / jump to a line / stop
+- **On match**: continue / click (region center or custom coordinates) / jump to a line / end the current script and move to the next workflow step
+- **Secondary match**: optionally confirm with another template after a hit
+- The target must be visible in real time; minimum polling interval 50 ms
 
-**文字识别**（读会变化的文字，与识图互补）：引擎为 PaddleOCR（纯离线，中文数字识别准确）
+**OCR text recognition** (reads changing text, complementary to image matching): powered by PaddleOCR (fully offline, accurate Chinese & digits)
 
-- 框选识别区域（留空 = 全屏），或绑定目标窗口
-- 期望文字按"包含 / 等于"匹配；留空 = 识别到任意文字即命中
-- 支持轮询等待与超时后继续 / 跳转 / 停止；结果显示在状态栏与执行小窗
+- Drag-select a region (empty = full screen), or bind a target window
+- Expected text matched by "contains / equals"; empty = any recognized text hits
+- Polling with timeout, then continue / jump / stop; results shown in the status bar and the execution mini window
 
-## 🗂️ 模块对象
+## 🗂️ Module Objects
 
-"模块对象管理"把识别设置保存为可复用的独立对象，分类：**切换 / 工作流全局 / 脚本全局 / 特殊**。
+The Module Object Manager stores recognition settings as reusable objects, categorized as **Switch / Workflow Global / Script Global / Special**.
 
-- **独立身份**：按 ID 引用而非图片路径，同一张图可建多个不同模块，互不覆盖
-- **识别设置**：模板、区域、阈值、持续时长、识别方式（模板图片、识别文字、读取数字或无需识图）
-- **成功动作 + 附加代码段**：命中后执行的动作，完成后可继续执行一段附加动作（支持跳转、前置窗口等固定动作）
-- **超时代码段**：独立设置"连续未识别"超过时限后执行的动作
-- 仓库支持拼音排序、批量加入 / 批量从脚本删除、双击编辑、撤销移除
+- **Unique identity**: referenced by ID rather than image path; one image can back multiple modules without overwriting
+- **Recognition settings**: template, region, threshold, hold duration, recognition mode (template image, text, read number, or no recognition)
+- **Success action + post-action code segment**: the action executed on a hit, optionally followed by extra actions (jumps, foreground window, etc.)
+- **Timeout code segment**: actions run when "continuous miss" exceeds the configured limit
+- Repository: pinyin sorting, bulk add / bulk remove from scripts, double-click edit, undo removal
 
-### 🔢 读取数字模块
+### 🔢 Reading Numbers Module
 
-在"模块对象管理"新建切换模块，把"识别方式"设为**读取数字**并框选数字所在区域。运行时会把 OCR 数字段按屏幕从左到右拼接为整数（例如 `0`、`0`、`7` → `7`）。
+Create a Switch module, set the recognition mode to **Read Number**, and drag-select the region containing the digits. At runtime, OCR digit boxes are concatenated left-to-right into an integer (e.g. `0`, `0`, `7` → `7`).
 
-插入脚本时设置"比较数字"与两路结果：**等于 / 不等于或未读取到**。两路均可继续下一行、跳转到稳定行对象或结束当前最里层脚本；未读取到数字时按模块的"阻塞识别 / 未识别时限"重试，非阻塞超时后走失败分支。
+When inserting the module into a script, configure the **compare number** and two result branches: **equal / not-equal-or-not-read**. Both branches can continue to the next line, jump to a stable line object, or end the innermost script; when no number is read, it retries per the module's blocking / timeout settings, and a non-blocking timeout falls to the failure branch.
 
-## ⚙️ 工作流
+## ⚙️ Workflows
 
-"工作流"页按顺序组织多个脚本，每一行（步骤）可设置：
+The Workflow page organizes multiple scripts in order; each step supports:
 
-| 设置项 | 说明 |
+| Setting | Description |
 |---|---|
-| 📄 脚本 | 双击更换 |
-| 🔁 执行次数 | 剩余次数制（失败或手动停止不扣减，减到 0 显示"次数用完"）；可设 0 或勾选**不计次数**（每轮只执行一次）；可配置**第 2 次及以后从指定行开始** |
-| ⏳ 开始前等待 | 执行前等多少毫秒 |
-| ⏱️ 重复间隔 | 同一脚本相邻两次执行之间等待时间，默认 1000 ms |
-| ✅ 启用 / 禁用 | 禁用行变灰自动跳过，不扣次数 |
-| 🌐 全局模块 | 步骤可挂接工作流全局模块 |
+| 📄 Script | Double-click to change |
+| 🔁 Repeat count | Remaining-count system (no decrement on failure or manual stop, shows "done" at 0); 0 or **unlimited** (once per round); optional **start from a specific line from the 2nd run** |
+| ⏳ Wait before run | Milliseconds to wait before executing |
+| ⏱️ Repeat interval | Gap between consecutive runs of the same script, default 1000 ms |
+| ✅ Enable / disable | Disabled rows are greyed out and skipped without decrementing |
+| 🌐 Global modules | Attach workflow-global modules to a step |
 
-其他操作：单击选中行后可**从选中行运行**；**统一设置参数**一次批量修改次数 / 等待 / 间隔；步骤删除可撤销；脚本文件丢失的行标红并在执行时提示原因；**定时执行**可指定 `YYYY-MM-DD HH:MM:SS` 开始时间（留空立即执行，等待期间程序必须保持运行）。
+Other operations: select a row to **run from the selected line**; **bulk-set parameters** (counts / wait / interval); step deletion is undoable; rows whose script file is missing are highlighted red with a reason at runtime; **scheduled start** accepts a `YYYY-MM-DD HH:MM:SS` time (empty = run immediately; the app must keep running while waiting).
 
-工作流是普通文件（`workflows` 目录下的 JSON）：新建 / 打开 / 保存，界面上显示的就是该文件的内容，修改后保存即生效。
+Workflows are plain files (JSON under `workflows/`): New / Open / Save. The UI shows the file content; saving overwrites it directly.
 
-### 🌐 全局检测
+### 🌐 Global Detection
 
-工作流执行期间，启用的全局模块持续检测（共享同一轮截图，不重复截屏），满足条件即触发：
+During workflow execution, enabled global modules keep scanning (sharing one screenshot per round, no repeated captures) and trigger when their condition is met:
 
-- **打断与恢复**：触发时暂停当前脚本并保存断点，执行模块的成功动作后自动恢复原脚本
-- **点击**：点击识别区域中心或自定义坐标；点击前确保目标窗口在前台
-- **重启工作流**：触发后可重新执行整个工作流
+- **Interrupt & resume**: on trigger, pauses the current script and saves a breakpoint, runs the module's success action, then resumes the original script
+- **Click**: clicks the region center or custom coordinates; ensures the target window is in the foreground first
+- **Restart workflow**: on trigger, restarts the workflow from a configurable row (per-action or per-module, falling back to the global default row; "set as default" in the module form) instead of a single unified jump target
 
-## 🛠️ 执行与设置
+## 🛠️ Execution & Settings
 
-- **强制专注模式**（默认关）：切换英语输入法 + 系统级键鼠锁定（`BlockInput`），阻止误操作；F12 保留为紧急停止
-- **执行前置窗口**：独立开关，执行前自动把目标窗口置前
-- **悬浮小窗**：执行 / 录制时置顶小窗（各自独立开关），显示进度与动作日志
-- **系统托盘**：点关闭按钮可最小化到托盘继续运行，托盘菜单可恢复窗口或退出
-- **快捷键提示音**：录制开始/结束、执行、完成、紧急停止各有不同音调，可测试
-- **读取当前坐标**：实时显示光标坐标与所在窗口，用于手工填写坐标
-- **分辨率适配**：脚本记录录制电脑的虚拟屏幕尺寸，换机执行时自动缩放坐标（旧脚本按 1920×1080 处理）
+- **Focus lock mode** (off by default): switches to the English input method + system-level mouse/keyboard lock (`BlockInput`) to block misoperation; `F12` remains the emergency stop
+- **Foreground window**: independent toggle, brings the target window to the front before execution
+- **Mini windows**: always-on-top mini window for execution / recording (independent toggles) showing progress and the action log
+- **System tray**: closing to tray keeps it running; the tray menu restores the window or quits
+- **Hotkey sounds**: distinct tones for record start/end, run, complete, and emergency stop; testable
+- **Read current coordinates**: shows the live cursor position and the window under it for manual coordinate entry
+- **Resolution scaling**: scripts store the recording machine's virtual screen size; coordinates are scaled automatically on another machine (legacy scripts assumed 1920×1080)
 
-## 💾 备份与日志
+## 💾 Backup & Logs
 
-- **定时备份**：间隔固定为 `1h` / `1天` / `1周`，扫描已配置的脚本目录备份到 `backups/scripts/`；每个脚本固定对应一个目标文件，不生成多份历史副本
-- **开机自启动**：写入当前 Windows 用户的启动项；取消勾选即删除
-- **启动到托盘 / 启动自动执行工作流**：可同时启用，自动运行结束后仍保持在托盘，双击托盘图标恢复窗口
-- **运行日志**：自动写到 `logs/年-月-日/MacroFlow_启动时间_进程号.log`，每次启动独立文件，日志页的"打开日志目录"可直接查看
+- **Timed backup**: fixed intervals `1h` / `1 day` / `1 week`; scans the configured script directories into `backups/scripts/`; each script maps to one target file (no history copies)
+- **Auto start on boot**: writes the current Windows user's startup entry; unchecking removes it
+- **Start to tray / auto-run workflow at startup**: can be combined; after an auto workflow finishes it stays in the tray, double-click the tray icon to restore
+- **Run logs**: written to `logs/YYYY-MM-DD/MacroFlow_<start time>_<pid>.log`, one file per launch; "Open log directory" on the log page
 
-## 🗄️ 文件目录
+## 🗄️ File Layout
 
-程序首次启动在 exe 同目录创建：
+Created next to the exe on first launch:
 
 ```
 MacroFlowStudio/
-├── MacroFlowStudio.exe   # 主程序（约 70 MB）
-├── paddle_ocr/           # OCR 引擎 + 模型 + 全部运行依赖（按需加载）
-├── scripts/              # 脚本
-├── workflows/            # 工作流
-├── images/               # 建议存放识图模板
-├── backups/scripts/      # 定时备份
-├── logs/                 # 运行日志（按日期 / 会话拆分）
-└── app_settings.json     # 全部侧边栏配置与窗口绑定
+├── MacroFlowStudio.exe   # Main program (~70 MB)
+├── paddle_ocr/           # OCR engine + models + all runtime dependencies (loaded on demand)
+├── scripts/              # Scripts
+├── workflows/            # Workflows
+├── images/               # Recommended location for image-match templates
+├── backups/scripts/      # Timed backups
+├── logs/                 # Run logs (by date / session)
+└── app_settings.json     # All sidebar settings and window binding
 ```
 
-"打开"按钮可读取其他目录的 JSON 脚本；模板图片建议放 `images` 并在识图动作里用相对路径（如 `images\start_button.png`），方便迁移。
+The "Open" button can load JSON scripts from other directories; put templates under `images` and use relative paths (e.g. `images\start_button.png`) in image-match actions for easy migration.
 
-## 📸 界面预览
+## 📸 Screenshots
 
-<!-- 在此放置截图：主界面、脚本编辑页、模块对象管理、工作流页、执行小窗 -->
-（截图待补充）
+<!-- Add screenshots here: main window, script editor, module object manager, workflow page, execution mini window -->
+(To be added)
 
-## 🏗️ 从源码运行与打包
+## 🏗️ Run from Source & Build
 
 ```powershell
 python -m pip install -r requirements.txt
-python app.py          # 源码运行
-.\build.ps1            # 打包，输出 dist\MacroFlowStudio.exe + dist\paddle_ocr\
+python app.py          # run from source
+.\build.ps1            # package: outputs dist\MacroFlowStudio.exe + dist\paddle_ocr\
 ```
 
-源码运行需要 Python 3.13 + PaddleOCR 依赖（见 run.bat）；"识别文字"依赖 PaddleOCR 模型目录（`paddle_models`）。
+Running from source requires Python 3.13 + PaddleOCR dependencies (see run.bat); "OCR Text" requires the PaddleOCR model directory (`paddle_models`).
 
-## 🛡️ 安全限制
+## 🛡️ Safety Limits
 
-- 轨迹采样间隔不小于 10 ms；识图检测间隔不小于 50 ms；单次录制最多 200,000 个动作
-- 停止或异常退出时尽量释放仍处于按下状态的按键和鼠标键
-- 请遵守目标软件的服务条款；部分游戏禁止任何形式的宏或自动化
-
----
-
-## 📈 v1.0.0 功能总览
-
-首个公开发布版本。按功能模块梳理：
-
-### 录制与回放
-
-- 智能轨迹识别：鼠标锁定在窗口中央时记录原始相对轨迹（游戏视角转向，高频采样 ≤16 ms）；离开目标窗口后恢复普通桌面坐标（默认间隔 20 ms，可调 10–500 ms）
-- 相对转向回放零额外开销：仅目标窗口变化时才执行窗口激活
-- 录制前自动切换英语（美国）输入法；F8 新录制自动与已打开脚本分离
-- 回放支持从指定行开始、按次数重复、断点恢复、连续点击
-
-### 脚本编辑
-
-- 动作类型：延时、键盘、文本、鼠标移动 / 点击 / 连续点击、滚轮、识图、识别文字、浮动提醒、注释、引用脚本、打开 / 关闭软件、跳转、前置窗口、特殊模块、模块引用
-- 多选编辑、撤销 / 重做、向下复制、从此运行；插入脚本支持一行引用或逐行复制（行 ID 重建、跳转引用同步映射）
-- 跳转目标按稳定行对象 ID 引用，脚本编辑后仍准确定位
-
-### 识别与模块对象
-
-- 模板匹配识图：区域、阈值、忽略背景、超时分支、二次识别确认
-- PaddleOCR 离线文字识别：外置引擎按需加载；支持文字框真实坐标点击、像素偏移、等待文字消失、读取数字
-- 模块对象仓库：切换 / 工作流全局 / 脚本全局 / 特殊分类；启用禁用、批量加入 / 删除、附加代码段、超时代码段、备用识别模块、连续点击、开始识别前延时
-- 点击屏幕选取坐标时自动隐藏窗口，避免遮挡目标页面
-
-### 工作流
-
-- 脚本步骤：执行次数、不计次数、开始前等待、重复间隔、启用状态、启动延时、统一重启目标、第 2 次起从指定行开始
-- 工作流全局模块：持续命中触发、超时代码段、结束当前脚本 / 重新执行工作流、断点恢复
-- 测试模式、从选中行运行、单独执行一次测试；剩余次数与跳转行严格一致
-
-### 系统与稳定性
-
-- 强制专注模式与系统级输入锁，异常时释放按住的按键
-- 执行小窗不抢占焦点；运行日志按日期与会话落盘
-- 定时备份、开机自启动、启动到托盘、启动自动执行工作流
-- 打包版 OCR 引擎外置，主程序约 70 MB；构建自动校验版本、符号与输入锁
+- Track sampling interval ≥ 10 ms; image-match polling interval ≥ 50 ms; max 200,000 actions per recording
+- Held keys and mouse buttons are released on stop or abnormal exit whenever possible
+- Respect the target software's terms of service; some games prohibit any form of macro or automation
 
 ---
 
-## 🤝 AI 协作规则
+## 📈 v1.0.0 Feature Overview
 
-- **DeepSeek** 完成修改后不需要打开软件测试效果：不启动程序、不写 GUI 驱动脚本复现 bug、不做视觉检查、不做打包版冒烟测试。交付验收标准 = `python test_core.py` 全绿 + 构建成功 + `verify_build.py` 通过；bug 修复通过代码阅读和单元测试定位，修改完成后由用户自己运行验证。
-- **GPT** 完成修改后按需做视觉与冒烟检查：涉及界面布局、按钮显示等 UI 改动时启动程序实际点开确认；纯逻辑改动可直接交付，打包版 DPI 冒烟测试按需运行。
+First public release, organized by feature area:
+
+### Recording & Playback
+
+- Smart track recording: raw relative movement while the cursor is locked at the window center (game view turning, sampled at ≤16 ms); desktop coordinates resume outside the window (default 20 ms, 10–500 ms configurable)
+- Relative view turning has zero extra playback overhead: the window is only activated when the target window changes
+- Automatically switches to English (US) input method before recording; F8 detaches new recordings from the open script
+- Playback supports starting from a specific line, repeat counts, breakpoint resume, and multi-click
+
+### Script Editing
+
+- Action types: delay, keyboard, text, mouse move / click / multi-click, wheel, image match, OCR, notice, comment, script reference, open / close app, jump, foreground window, special modules, module reference
+- Multi-select editing, undo / redo, duplicate down, run from here; script insertion as a live reference or a full copy (IDs rebuilt, jump references remapped)
+- Jump targets use stable line-object IDs and stay valid after script edits
+
+### Recognition & Module Objects
+
+- Template matching: region, threshold, ignore background, timeout branches, secondary confirmation
+- Offline PaddleOCR: loaded on demand; real text-box coordinates, pixel offsets, wait-until-text-gone, number reading
+- Module repository: switch / workflow-global / script-global / special; enable / disable, bulk add / remove, post-action & timeout code segments, fallback recognition, multi-click, pre-recognition delay
+- Window auto-hiding while picking coordinates on screen so the tool never blocks the target page
+
+### Workflows
+
+- Steps: repeat count, unlimited, wait before run, repeat interval, enable state, start delay, unified restart target, start-from-line from the 2nd run
+- Workflow-global modules: hold-duration trigger, timeout code segments, end current script / restart workflow, breakpoint resume
+- Test mode, run from selected line, single-run test; remaining counts and jump lines are strictly consistent
+
+### System & Stability
+
+- Focus lock mode with a system-level input lock; held keys are released on abnormal exit
+- Execution mini window never steals focus; run logs are written per date / session
+- Timed backup, auto start on boot, start to tray, auto-run a workflow at startup
+- OCR engine externalized in the packaged build (~70 MB main exe); the build pipeline verifies version, symbols, and input locks
+
+---
+
+## 🤝 AI Collaboration Rules
+
+- **DeepSeek**: no need to launch the app to test after changes — no program launches, no GUI-driving scripts to reproduce bugs, no visual checks, no packaged smoke tests. Acceptance = `python test_core.py` all green + successful build + `verify_build.py` passing; bug fixes are located via code reading and unit tests, and the user runs the app to verify afterwards.
+- **GPT**: visual and smoke checks as needed — UI layout / button changes require launching the app to confirm; pure logic changes can be delivered directly; packaged DPI smoke tests on demand.
 
 ---
 
 <div align="center">
 
-**MacroFlow Studio** · [更新历史](CHANGELOG.md) · [发布下载](https://github.com/SakuraLoveForever/MacroFlowStudio-/releases)
+**MacroFlow Studio** · [Changelog](CHANGELOG.md) · [Releases](https://github.com/SakuraLoveForever/MacroFlowStudio-/releases)
 
 </div>

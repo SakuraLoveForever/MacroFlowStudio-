@@ -219,6 +219,24 @@ def save_app_settings(settings: dict) -> None:
     SETTINGS_PATH.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def load_module_settings() -> dict:
+    """Load the module-manager settings file (images dir, restart default row…)."""
+    if not MODULE_SETTINGS_PATH.exists():
+        return {}
+    try:
+        value = json.loads(MODULE_SETTINGS_PATH.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_module_settings(settings: dict) -> None:
+    MODULE_SETTINGS_PATH.write_text(
+        json.dumps(settings, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
 def load_module_images_dir() -> Path:
     """Return the configured recognition-image folder.
 
@@ -227,24 +245,38 @@ def load_module_images_dir() -> Path:
     ``dist/images/部分`` while source runs default to the matching source path.
     """
     default = IMAGES_DIR / "部分"
-    if not MODULE_SETTINGS_PATH.exists():
-        return default
-    try:
-        value = json.loads(MODULE_SETTINGS_PATH.read_text(encoding="utf-8"))
-        raw = str(value.get("images_dir", "")).strip() if isinstance(value, dict) else ""
-    except (OSError, json.JSONDecodeError):
-        raw = ""
+    raw = str(load_module_settings().get("images_dir", "")).strip()
     return resolve_path(raw) if raw else default
 
 
 def save_module_images_dir(path: str | Path) -> Path:
     directory = Path(path).resolve()
     directory.mkdir(parents=True, exist_ok=True)
-    MODULE_SETTINGS_PATH.write_text(
-        json.dumps({"images_dir": display_path(directory)}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    settings = load_module_settings()
+    settings["images_dir"] = display_path(directory)
+    save_module_settings(settings)
     return directory
+
+
+def load_module_restart_default_row() -> int:
+    """Return the default workflow row for「重新执行工作流」jumps (1-based).
+
+    Stored in the module-manager settings file so it stays independent from
+    sidebar setting snapshots. 0 表示未设置，运行时按第 1 行处理。
+    """
+    try:
+        return max(0, int(load_module_settings().get("restart_workflow_default_row", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def save_module_restart_default_row(row: int) -> int:
+    """Persist the default workflow row for「重新执行工作流」jumps (1-based)."""
+    row = max(1, int(row))
+    settings = load_module_settings()
+    settings["restart_workflow_default_row"] = row
+    save_module_settings(settings)
+    return row
 
 
 def module_image_inventory(directory: str | Path, objects: dict[str, dict]) -> list[dict]:
