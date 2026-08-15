@@ -1,0 +1,195 @@
+from __future__ import annotations
+
+import ctypes
+import threading
+from ctypes import wintypes
+from typing import Callable
+
+
+user32 = ctypes.windll.user32
+kernel32 = ctypes.windll.kernel32
+
+WM_INPUT = 0x00FF
+WM_CLOSE = 0x0010
+WM_DESTROY = 0x0002
+RID_INPUT = 0x10000003
+RIM_TYPEMOUSE = 0
+RIDEV_INPUTSINK = 0x00000100
+HWND_MESSAGE = -3
+
+
+class RAWINPUTDEVICE(ctypes.Structure):
+    _fields_ = [
+        ("usUsagePage", wintypes.USHORT),
+        ("usUsage", wintypes.USHORT),
+        ("dwFlags", wintypes.DWORD),
+        ("hwndTarget", wintypes.HWND),
+    ]
+
+
+class RAWINPUTHEADER(ctypes.Structure):
+    _fields_ = [
+        ("dwType", wintypes.DWORD),
+        ("dwSize", wintypes.DWORD),
+        ("hDevice", wintypes.HANDLE),
+        ("wParam", wintypes.WPARAM),
+    ]
+
+
+class BUTTONS_STRUCT(ctypes.Structure):
+    _fields_ = [("usButtonFlags", wintypes.USHORT), ("usButtonData", wintypes.USHORT)]
+
+
+class BUTTONS_UNION(ctypes.Union):
+    _anonymous_ = ("buttons",)
+    _fields_ = [("ulButtons", wintypes.ULONG), ("buttons", BUTTONS_STRUCT)]
+
+
+class RAWMOUSE(ctypes.Structure):
+    _anonymous_ = ("button_data",)
+    _fields_ = [
+        ("usFlags", wintypes.USHORT),
+        ("button_data", BUTTONS_UNION),
+        ("ulRawButtons", wintypes.ULONG),
+        ("lLastX", wintypes.LONG),
+        ("lLastY", wintypes.LONG),
+        ("ulExtraInformation", wintypes.ULONG),
+    ]
+
+
+class RAWDATA_UNION(ctypes.Union):
+    _fields_ = [("mouse", RAWMOUSE), ("padding", ctypes.c_byte * 64)]
+
+
+class RAWINPUT(ctypes.Structure):
+    _fields_ = [("header", RAWINPUTHEADER), ("data", RAWDATA_UNION)]
+
+
+LRESULT = ctypes.c_ssize_t
+WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+
+kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+user32.RegisterClassW.argtypes = [ctypes.c_void_p]
+user32.RegisterClassW.restype = wintypes.ATOM
+user32.UnregisterClassW.argtypes = [wintypes.LPCWSTR, wintypes.HINSTANCE]
+user32.UnregisterClassW.restype = wintypes.BOOL
+user32.CreateWindowExW.argtypes = [
+    wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+    wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, ctypes.c_void_p,
+]
+user32.CreateWindowExW.restype = wintypes.HWND
+user32.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.DefWindowProcW.restype = LRESULT
+user32.DestroyWindow.argtypes = [wintypes.HWND]
+user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
+user32.GetMessageW.restype = wintypes.BOOL
+user32.RegisterRawInputDevices.argtypes = [ctypes.POINTER(RAWINPUTDEVICE), wintypes.UINT, wintypes.UINT]
+user32.RegisterRawInputDevices.restype = wintypes.BOOL
+user32.GetRawInputData.argtypes = [wintypes.HANDLE, wintypes.UINT, ctypes.c_void_p, ctypes.POINTER(wintypes.UINT), wintypes.UINT]
+user32.GetRawInputData.restype = wintypes.UINT
+
+
+class WNDCLASSW(ctypes.Structure):
+    _fields_ = [
+        ("style", wintypes.UINT), ("lpfnWndProc", WNDPROC),
+        ("cbClsExtra", ctypes.c_int), ("cbWndExtra", ctypes.c_int),
+        ("hInstance", wintypes.HINSTANCE), ("hIcon", wintypes.HICON),
+        ("hCursor", wintypes.HANDLE), ("hbrBackground", wintypes.HBRUSH),
+        ("lpszMenuName", wintypes.LPCWSTR), ("lpszClassName", wintypes.LPCWSTR),
+    ]
+
+
+class RawMouseListener:
+    """WM_INPUT listener for relative mouse deltas, including cursor-locked games."""
+
+    def __init__(self, callback: Callable[[int, int], None]):
+        self.callback = callback
+        self.thread: threading.Thread | None = None
+        self.hwnd: int | None = None
+        self._ready = threading.Event()
+        self.error: str = ""
+        self._wndproc_ref = None
+
+    def start(self) -> None:
+        if self.thread and self.thread.is_alive():
+            return
+        self._ready.clear()
+        self.thread = threading.Thread(target=self._run, name="RawMouseListener", daemon=True)
+        self.thread.start()
+        self._ready.wait(2.0)
+        if self.error:
+            raise RuntimeError(self.error)
+
+    def stop(self) -> None:
+        if self.hwnd:
+            user32.PostMessageW(self.hwnd, WM_CLOSE, 0, 0)
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=1.5)
+        self.hwnd = None
+
+    def _run(self) -> None:
+        class_name = f"MacroStudioRawInput_{id(self)}"
+        hinstance = kernel32.GetModuleHandleW(None)
+
+        @WNDPROC
+        def wndproc(hwnd, msg, wparam, lparam):
+            if msg == WM_INPUT:
+                self._handle_raw_input(lparam)
+                return 0
+            if msg == WM_CLOSE:
+                user32.DestroyWindow(hwnd)
+                return 0
+            if msg == WM_DESTROY:
+                user32.PostQuitMessage(0)
+                return 0
+            return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+        self._wndproc_ref = wndproc
+        wc = WNDCLASSW()
+        wc.lpfnWndProc = wndproc
+        wc.hInstance = hinstance
+        wc.lpszClassName = class_name
+        atom = user32.RegisterClassW(ctypes.byref(wc))
+        if not atom:
+            self.error = f"注册原始输入窗口失败：{ctypes.get_last_error()}"
+            self._ready.set()
+            return
+        hwnd = user32.CreateWindowExW(0, class_name, class_name, 0, 0, 0, 0, 0,
+                                      wintypes.HWND(HWND_MESSAGE), None, hinstance, None)
+        if not hwnd:
+            self.error = f"创建原始输入窗口失败：{ctypes.get_last_error()}"
+            self._ready.set()
+            return
+        self.hwnd = int(hwnd)
+        device = RAWINPUTDEVICE(0x01, 0x02, RIDEV_INPUTSINK, hwnd)
+        ok = user32.RegisterRawInputDevices(ctypes.byref(device), 1, ctypes.sizeof(RAWINPUTDEVICE))
+        if not ok:
+            self.error = f"注册鼠标原始输入失败：{ctypes.get_last_error()}"
+            user32.DestroyWindow(hwnd)
+            self._ready.set()
+            return
+        self._ready.set()
+        msg = wintypes.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+        user32.UnregisterClassW(class_name, hinstance)
+
+    def _handle_raw_input(self, lparam: int) -> None:
+        size = wintypes.UINT(0)
+        header_size = ctypes.sizeof(RAWINPUTHEADER)
+        user32.GetRawInputData(lparam, RID_INPUT, None, ctypes.byref(size), header_size)
+        if not size.value:
+            return
+        buffer = ctypes.create_string_buffer(size.value)
+        received = user32.GetRawInputData(lparam, RID_INPUT, buffer, ctypes.byref(size), header_size)
+        if received != size.value:
+            return
+        raw = ctypes.cast(buffer, ctypes.POINTER(RAWINPUT)).contents
+        if raw.header.dwType == RIM_TYPEMOUSE:
+            dx, dy = int(raw.data.mouse.lLastX), int(raw.data.mouse.lLastY)
+            if dx or dy:
+                self.callback(dx, dy)

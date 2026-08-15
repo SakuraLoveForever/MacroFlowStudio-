@@ -1,0 +1,52 @@
+# ============================================================
+# MacroFlow Studio — 私有内容与构建产物（勿提交到 GitHub）
+# ============================================================
+
+# ---- 用户私有数据：脚本 / 工作流 / 截图 / 备份 ----
+scripts/
+workflows/
+images/
+backups/
+
+# ---- 打包产物与运行时数据（含 EXE、脚本副本、日志） ----
+dist/
+build/
+paddle_models/
+
+# ---- Python 缓存 ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ---- 依赖环境 / 测试目录 ----
+.deps/
+_meitest/
+.dsh-image-bridge/
+
+# ---- 大体积压缩包 ----
+*.zip
+*.tar
+
+# ---- 本地配置（含绑定窗口路径、游戏信息等私人数据） ----
+app_settings.json
+template_regions.json
+
+# ---- 日志与构建输出 ----
+*.log
+crash.log
+build_out.txt
+logs/
+
+# ---- 一次性诊断脚本 / 个人开发工具 / 私有文档与测试素材 ----
+diag_*.py
+update_codex_proxy_env.ps1
+design-qa.md
+_ocr_test.png
+_modlens_test.json
+
+# ---- 编辑器 / 系统杂项 ----
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
