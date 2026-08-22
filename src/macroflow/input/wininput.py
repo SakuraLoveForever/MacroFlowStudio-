@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import time
 from ctypes import wintypes
 from dataclasses import dataclass
@@ -135,6 +136,12 @@ ULONG_PTR = wintypes.WPARAM
 def force_english_input(hwnd: int | None = None) -> bool:
     """Switch the target window to US English and close any active IME."""
     target = int(hwnd or user32.GetForegroundWindow() or 0)
+    # 目标窗口线程已是英语（美国）布局时直接返回：反复按 F9 执行不再
+    # 重复切换输入法，消除执行前的输入法切换开销。
+    if target:
+        target_thread = user32.GetWindowThreadProcessId(wintypes.HWND(target), None)
+        if target_thread and (int(user32.GetKeyboardLayout(target_thread)) & 0xFFFF) == ENGLISH_US_LANGUAGE_ID:
+            return True
     layout = user32.LoadKeyboardLayoutW(ENGLISH_US_LAYOUT, KLF_ACTIVATE)
     if not layout:
         return False
@@ -308,15 +315,48 @@ def enum_windows() -> list[WindowInfo]:
     return sorted(result, key=lambda item: item.title.lower())
 
 
+def resolve_window_signature(signature: dict | None) -> WindowInfo | None:
+    """按保存的窗口签名（title/class_name/process_path）在当前窗口表里找回窗口。
+
+    窗口重启/重建后句柄会变化，标题可能附带会话状态；先用三项全匹配
+    （标题权重最低，防止标题近似但程序不同的窗口误配），再退化为
+    “类名 + 进程路径”稳定匹配。窗口未打开或签名无效时返回 None。
+    """
+    signature = signature or {}
+    title = str(signature.get("title", "")).strip()
+    class_name = str(signature.get("class_name", "")).strip()
+    process_path = os.path.normcase(str(signature.get("process_path", "")).strip()).casefold()
+    if not title and not class_name and not process_path:
+        return None
+
+    candidates = enum_windows()
+
+    def score(item) -> int:
+        item_path = os.path.normcase(str(item.process_path or "")).casefold()
+        value = 0
+        if title and item.title == title:
+            value += 4
+        if class_name and item.class_name == class_name:
+            value += 3
+        if process_path and item_path == process_path:
+            value += 5
+        return value
+
+    required = (4 if title else 0) + (3 if class_name else 0) + (5 if process_path else 0)
+    for item in candidates:
+        if score(item) == required:
+            return item
+    # 窗口标题可能包含会话状态；类名 + 程序路径仍能稳定找回重启后的窗口。
+    for item in candidates:
+        if (class_name or process_path) \
+                and (not class_name or item.class_name == class_name) \
+                and (not process_path or os.path.normcase(str(item.process_path or "")).casefold() == process_path):
+            return item
+    return None
+
+
 def is_window(hwnd: int | None) -> bool:
     return bool(hwnd and user32.IsWindow(wintypes.HWND(hwnd)))
-
-
-def is_window_foreground(hwnd: int | None) -> bool:
-    """Return whether the requested window currently owns keyboard focus."""
-    if not hwnd or not is_window(hwnd):
-        return False
-    return int(user32.GetForegroundWindow()) == int(hwnd)
 
 
 def is_window_process_foreground(hwnd: int | None) -> bool:
@@ -378,7 +418,13 @@ def activate_window(hwnd: int) -> bool:
     try:
         user32.BringWindowToTop(wintypes.HWND(hwnd))
         user32.SetForegroundWindow(wintypes.HWND(hwnd))
-        user32.SetFocus(wintypes.HWND(hwnd))
+        # SetFocus 会把键盘焦点从窗口内部的子渲染表面（Flash/CEF 画布）
+        # 夺走，游戏客户端随即弹出“点击游戏画面继续操作”的失焦遮罩；
+        # 窗口每次播放启动都会被激活，因此这里绝不能无条件 SetFocus。
+        # 仅当 SetForegroundWindow 没有把窗口带到前台（激活失败）时才
+        # 补 SetFocus 强制转移焦点；窗口本就在前台时保持焦点不动。
+        if int(user32.GetForegroundWindow()) != int(hwnd):
+            user32.SetFocus(wintypes.HWND(hwnd))
     finally:
         if attached:
             user32.AttachThreadInput(current_thread, target_thread, False)
@@ -508,6 +554,11 @@ def get_cursor_pos() -> tuple[int, int]:
     point = wintypes.POINT()
     user32.GetCursorPos(ctypes.byref(point))
     return point.x, point.y
+
+
+def set_cursor_pos(x: int, y: int) -> bool:
+    """Move the cursor directly to a desktop position (no injected event)."""
+    return bool(user32.SetCursorPos(int(x), int(y)))
 
 
 def get_virtual_screen_rect() -> dict[str, int]:

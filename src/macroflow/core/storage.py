@@ -5,28 +5,38 @@ import os
 import re
 import shutil
 import sys
+from datetime import datetime
 from hashlib import sha1
 from pathlib import Path
 from typing import TypeVar
 
-from models import END_CURRENT_SCRIPT_LABEL, MacroScript, Workflow
+from macroflow.core.models import END_CURRENT_SCRIPT_LABEL, MacroScript, Workflow
 
 
 T = TypeVar("T", MacroScript, Workflow)
 
 
 def app_dir() -> Path:
+    """数据目录：打包版为 exe 同目录；源码版为项目根（src/ 的上级）。
+
+    源码结构为 src/macroflow/core/storage.py，向上四级即项目根——运行时
+    数据（scripts/workflows/images/backups/app_settings.json 等）始终生成
+    在项目根目录，与打包版的“exe 同目录”语义一致，源码与数据互不污染。
+    """
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent
+    return Path(__file__).resolve().parent.parent.parent.parent
 
 
 BASE_DIR = app_dir()
 SCRIPTS_DIR = BASE_DIR / "scripts"
+# 快捷键脚本专用目录：快捷键绑定的执行脚本只能从这里选择。
+DIRECTION_SCRIPTS_DIR = "scripts/方向"
 WORKFLOWS_DIR = BASE_DIR / "workflows"
 IMAGES_DIR = BASE_DIR / "images"
 SETTINGS_PATH = BASE_DIR / "app_settings.json"
 SCRIPT_BACKUPS_DIR = BASE_DIR / "backups" / "scripts"
+OVERWRITTEN_BACKUPS_DIR = BASE_DIR / "backups" / "overwritten"
 TEMPLATE_REGIONS_PATH = BASE_DIR / "template_regions.json"
 MODULE_SETTINGS_PATH = BASE_DIR / "module_settings.json"
 MODULE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp"}
@@ -70,6 +80,32 @@ def backup_script(source: str | Path, snapshot: dict | None = None) -> Path:
     else:
         target.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
     return target
+
+
+def archive_overwritten_script(source: str | Path) -> Path | None:
+    """覆盖保存前保留旧版本：复制到 backups/overwritten/（时间戳历史）。
+
+    同一脚本每次被覆盖都留下独立历史文件（backups/overwritten/相对路径/
+    时间戳_原文件名.json），可随时找回被覆盖的版本；脚本目录之外的路径
+    归入 external/<摘要>/ 下。复制失败时返回 None（不阻断覆盖保存本身）。
+    """
+    try:
+        source_path = Path(source).resolve()
+        if not source_path.is_file():
+            return None
+        try:
+            relative = source_path.relative_to(BASE_DIR.resolve())
+            folder = OVERWRITTEN_BACKUPS_DIR / relative.parent
+        except ValueError:
+            digest = sha1(str(source_path).casefold().encode("utf-8")).hexdigest()[:12]
+            folder = OVERWRITTEN_BACKUPS_DIR / "external" / digest
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target = folder / f"{stamp}_{source_path.name}"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target)
+        return target
+    except OSError:
+        return None
 
 
 def available_script_path(name: str, folder: Path | None = None) -> Path:
@@ -176,6 +212,24 @@ def resolve_path(path: str | Path) -> Path:
     return resolved
 
 
+def remap_hotkey_script_bindings(
+    bindings: list[dict], old_path: str | Path, new_path: str | Path,
+) -> int:
+    """Update bindings that point exactly to a renamed script file."""
+    old_resolved = resolve_path(old_path).resolve()
+    replacement = display_path(new_path)
+    updated = 0
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            continue
+        raw_path = str(binding.get("script", "")).strip()
+        if not raw_path or resolve_path(raw_path).resolve() != old_resolved:
+            continue
+        binding["script"] = replacement
+        updated += 1
+    return updated
+
+
 def load_app_settings() -> dict:
     defaults = {
         "sound_enabled": True,
@@ -196,6 +250,10 @@ def load_app_settings() -> dict:
         "start_minimized_to_tray": False,
         "startup_run_workflow": False,
         "startup_workflow_path": "",
+        # 上次关闭时脚本编辑页正在编辑的脚本（启动时自动恢复打开）。
+        "last_script_path": "",
+        # 快捷键脚本绑定：[{"key": "J", "vk": 74, "script": "scripts/关卡/xx.json"}, ...]
+        "hotkey_scripts": [],
     }
     if not SETTINGS_PATH.exists():
         return defaults
@@ -258,27 +316,6 @@ def save_module_images_dir(path: str | Path) -> Path:
     return directory
 
 
-def load_module_restart_default_row() -> int:
-    """Return the default workflow row for「重新执行工作流」jumps (1-based).
-
-    Stored in the module-manager settings file so it stays independent from
-    sidebar setting snapshots. 0 表示未设置，运行时按第 1 行处理。
-    """
-    try:
-        return max(0, int(load_module_settings().get("restart_workflow_default_row", 0) or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-def save_module_restart_default_row(row: int) -> int:
-    """Persist the default workflow row for「重新执行工作流」jumps (1-based)."""
-    row = max(1, int(row))
-    settings = load_module_settings()
-    settings["restart_workflow_default_row"] = row
-    save_module_settings(settings)
-    return row
-
-
 def module_image_inventory(directory: str | Path, objects: dict[str, dict]) -> list[dict]:
     """List supported image files recursively and mark registered module keys."""
     folder = Path(directory)
@@ -324,6 +361,7 @@ MODULE_AFTER_ACTIONS = (
     "second_match",      # 二次识别后点击：识别另一个模板（可限定区域）后点击其位置
     "run_actions",       # 旧格式：仅执行代码段；加载时迁移为 continue + 附加代码段
 )
+MODULE_FALLBACK_ACTIONS = ("continue", "click_continue", "exit", "click_exit")
 DEFAULT_MODULE_OBJECT: dict = {
     "category": "switch",
     "enabled": True,                    # 仓库可用性：禁用后不能再插入新引用
@@ -332,10 +370,11 @@ DEFAULT_MODULE_OBJECT: dict = {
     "interval_ms": 250,
     "start_delay_ms": 0,                # 脚本全局模块进入脚本后多久开始识别
     "fallback_module_key": "",         # 主模块等待期间同时识别的备用图片/文字模块
+    "fallback_on_match": "continue",   # 备用命中后继续识别主模块或直接退出
     "fallback_click": False,            # 备用首次出现时点击备用命中位置
     "blocking": False,                 # 阻塞识别：识别不到就一直等
     "wait_text_absent": False,         # OCR：目标文字存在时循环，消失后才完成
-    "hold_enabled": True,              # 全局模块是否要求命中状态持续达到 hold_ms
+    "hold_enabled": False,             # 全局模块是否要求命中状态持续达到 hold_ms（默认不启用）
     "hold_ms": 1000,                   # 全局模块（检测型）「持续超过」语义（切换模块忽略）
     "delay_ms": 0,                     # 识别成功后的延时 A
     "after_action": "click_match",
@@ -373,6 +412,7 @@ def _normalize_object(value, key: str = ""):
             return dict(
                 DEFAULT_MODULE_OBJECT, region=parts,
                 template=key if key and not key.startswith("module:") else "",
+                name=Path(str(key).replace("\\", "/")).stem,
             )
         return None
     if not isinstance(value, dict):
@@ -394,6 +434,10 @@ def _normalize_object(value, key: str = ""):
         obj["template"] = str(
             obj.get("template") or (key if key and not key.startswith("module:") else "")
         ).strip()
+    if not str(obj.get("name") or "").strip():
+        # 旧对象可能没有 name（过去以图片路径为键，靠文件名兜底显示；复制成
+        # module:<uuid> 键后该兜底会退化成 uuid），加载时按模板文件名统一补名。
+        obj["name"] = Path(str(obj.get("template") or key).replace("\\", "/")).stem
     raw_region = obj.get("region", [0, 0, 0, 0])
     if isinstance(raw_region, (list, tuple)) and len(raw_region) == 4:
         try:
@@ -421,10 +465,14 @@ def _normalize_object(value, key: str = ""):
         obj["hold_ms"] = 1000
     obj["blocking"] = bool(obj.get("blocking", False))
     obj["fallback_module_key"] = str(obj.get("fallback_module_key", "")).strip()
-    obj["fallback_click"] = bool(obj.get("fallback_click", False))
+    fallback_on_match = str(obj.get("fallback_on_match", "")).strip()
+    if fallback_on_match not in MODULE_FALLBACK_ACTIONS:
+        fallback_on_match = "click_continue" if bool(obj.get("fallback_click", False)) else "continue"
+    obj["fallback_on_match"] = fallback_on_match
+    obj["fallback_click"] = fallback_on_match.startswith("click_")
     obj["wait_text_absent"] = bool(obj.get("wait_text_absent", False))
     obj["enabled"] = bool(obj.get("enabled", True))
-    obj["hold_enabled"] = bool(obj.get("hold_enabled", True))
+    obj["hold_enabled"] = bool(obj.get("hold_enabled", False))
     try:
         obj["delay_ms"] = max(0, min(60000, int(obj.get("delay_ms", 0))))
     except (TypeError, ValueError):

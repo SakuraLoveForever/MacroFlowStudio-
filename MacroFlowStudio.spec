@@ -12,6 +12,7 @@
 #     pypdfium2/python-bidi），PIL 被 app/dialogs/ttkbootstrap 直接使用保留。
 import os
 import sys
+from pathlib import Path
 
 import pefile
 from PyInstaller.utils.hooks import collect_all
@@ -61,8 +62,8 @@ datas = [(s, d) for s, d in datas if not d.replace('\\', '/').startswith('cv2/da
 
 
 a = Analysis(
-    ['app.py'],
-    pathex=[],
+    ['src/macroflow/ui/app.py'],
+    pathex=[str(Path(SPECPATH).resolve() / 'src')],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -126,12 +127,29 @@ exe = EXE(
 )
 
 
+def _open_rw_with_retry(path, attempts=10, delay=0.5):
+    """以读写方式打开 exe，短暂重试。
+
+    杀毒软件会对刚写出的 exe 做实时扫描，构建尾声立即以写模式打开会偶发
+    PermissionError；重试几次等扫描释放文件，避免整次构建白跑。
+    """
+    import time
+    last_error = None
+    for _ in range(attempts):
+        try:
+            return open(path, "r+b")
+        except OSError as exc:
+            last_error = exc
+            time.sleep(delay)
+    raise last_error
+
+
 def _set_windows_gui_subsystem(path):
     image = pefile.PE(path, fast_load=True)
     subsystem_offset = image.OPTIONAL_HEADER.get_field_absolute_offset("Subsystem")
     checksum_offset = image.OPTIONAL_HEADER.get_field_absolute_offset("CheckSum")
     image.close()
-    with open(path, "r+b") as stream:
+    with _open_rw_with_retry(path) as stream:
         stream.seek(subsystem_offset)
         stream.write((2).to_bytes(2, "little"))
         stream.seek(checksum_offset)
@@ -139,7 +157,7 @@ def _set_windows_gui_subsystem(path):
     image = pefile.PE(path, fast_load=True)
     checksum = image.generate_checksum()
     image.close()
-    with open(path, "r+b") as stream:
+    with _open_rw_with_retry(path) as stream:
         stream.seek(checksum_offset)
         stream.write(checksum.to_bytes(4, "little"))
 

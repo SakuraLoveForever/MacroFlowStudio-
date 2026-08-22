@@ -6,8 +6,8 @@ import threading
 from ctypes import wintypes
 from typing import Callable
 
-import wininput
-from wininput import MACROFLOW_INPUT_TAG
+from macroflow.input import wininput
+from macroflow.input.wininput import MACROFLOW_INPUT_TAG
 
 
 user32 = ctypes.windll.user32
@@ -88,8 +88,14 @@ def should_block_mouse(flags: int, extra_info: int = 0) -> bool:
 class FocusInputGuard:
     """Block physical input globally while keeping an F12 emergency callback."""
 
-    def __init__(self, on_f12: Callable[[], None] | None = None):
+    def __init__(self, on_f12: Callable[[], None] | None = None,
+                 on_hotkey: Callable[[int], None] | None = None):
         self._on_f12 = on_f12
+        # 快捷键回调（虚键码）：专注模式下实体输入被整体锁定，普通监听器
+        # 可能收不到被拦截的按键，这里在钩子线程里直接识别绑定键。
+        self._on_hotkey = on_hotkey
+        self._hotkey_vks: frozenset[int] = frozenset()
+        self._hotkey_down: set[int] = set()
         self.active = False
         self._ready = threading.Event()
         self._thread: threading.Thread | None = None
@@ -123,6 +129,21 @@ class FocusInputGuard:
 
     def stop(self) -> None:
         self._stop_hooks()
+
+    def set_hotkeys(self, vks: set[int]) -> None:
+        """Update the hotkey virtual-key set observed by the guard hook."""
+        self._hotkey_vks = frozenset(int(vk) for vk in vks if int(vk) > 0)
+        # 绑定集合变化时清空按下状态：上次会话若漏收 keyup（如专注模式在
+        # 按键按住期间结束），残留状态会让该键此后一直被视为"按住"而不触发。
+        self._hotkey_down.clear()
+
+    def _fire_hotkey(self, vk: int) -> None:
+        if self._on_hotkey is None:
+            return
+        try:
+            self._on_hotkey(int(vk))
+        except Exception:
+            pass
 
     def release(self) -> None:
         """Stop the hooks from any thread."""
@@ -185,8 +206,17 @@ class FocusInputGuard:
         def keyboard_proc(code, wparam, lparam):
             if code == HC_ACTION:
                 data = ctypes.cast(lparam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-                if int(data.vkCode) == VK_F12 and not (int(data.flags) & LLKHF_INJECTED):
-                    message = int(wparam)
+                message = int(wparam)
+                vk = int(data.vkCode)
+                if not (int(data.flags) & LLKHF_INJECTED) \
+                        and vk in self._hotkey_vks:
+                    # 快捷键只触发一次：按住自动重复的 keydown 不再触发。
+                    if message in (WM_KEYDOWN, WM_SYSKEYDOWN) and vk not in self._hotkey_down:
+                        self._hotkey_down.add(vk)
+                        self._fire_hotkey(vk)
+                    elif message in (WM_KEYUP, WM_SYSKEYUP):
+                        self._hotkey_down.discard(vk)
+                if vk == VK_F12 and not (int(data.flags) & LLKHF_INJECTED):
                     if message in (WM_KEYDOWN, WM_SYSKEYDOWN) and not self._f12_down:
                         self._f12_down = True
                         if self._on_f12:

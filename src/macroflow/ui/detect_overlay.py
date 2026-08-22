@@ -42,7 +42,6 @@ WM_CLOSE = 0x0010
 WM_USER = 0x0400
 WM_OVERLAY_SHOW = WM_USER + 1
 WM_OVERLAY_HIDE = WM_USER + 2
-DPI_AWARENESS_UNAWARE = 0
 MDT_EFFECTIVE_DPI = 0
 
 _user32 = ctypes.windll.user32
@@ -88,14 +87,6 @@ _pending: tuple[int, int, int, int, int, int] | None = None  # (l,t,w,h,color,du
 _window_hwnd: int | None = None
 _window_thread: threading.Thread | None = None
 _ready = threading.Event()
-
-
-def _dpi_aware() -> bool:
-    try:
-        context = _user32.GetThreadDpiAwarenessContext()
-        return _user32.GetAwarenessFromDpiAwarenessContext(context) != DPI_AWARENESS_UNAWARE
-    except (AttributeError, OSError):
-        return False
 
 
 def _monitor_dpi(x: int, y: int) -> int:

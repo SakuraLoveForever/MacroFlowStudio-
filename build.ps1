@@ -1,6 +1,10 @@
 ﻿# 用 Continue 而非 Stop：PowerShell 5.1 在 "Stop" 下会把原生命令
 # （python.exe）写在 stderr 的任何输出当作错误并中断脚本，而
 # PyInstaller 的日志全走 stderr；错误改由 $LASTEXITCODE 显式检查。
+param(
+  [switch]$Clean
+)
+
 $ErrorActionPreference = "Continue"
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectDir
@@ -25,14 +29,61 @@ if (Test-Path -LiteralPath $ProjectDependencies) {
 # 排除 pip/networkx/hf_xet 等运行时不可达依赖）都在
 # MacroFlowStudio.spec 中实现，构建必须走 spec，不要改回命令行参数模式
 # （命令行参数模式会用参数覆盖本文件同目录的 spec，导致优化丢失）。
-try {
-  & $ProjectPython -m PyInstaller --noconfirm --clean MacroFlowStudio.spec
-} finally {
-  $env:PYTHONPATH = $PreviousModulePath
+$BuildStamp = Join-Path $ProjectDir "build\MacroFlowStudio.inputs.sha256"
+$BuildInputPaths = @(
+  (Join-Path $ProjectDir "MacroFlowStudio.spec"),
+  (Join-Path $ProjectDir "build.ps1")
+)
+$BuildInputPaths += @(Get-ChildItem -LiteralPath (Join-Path $ProjectDir "src") -File -Recurse |
+  Where-Object {
+    $_.FullName -notmatch '[\\/]__pycache__([\\/]|$)' -and
+    $_.Extension -notin @('.pyc', '.pyo')
+  } |
+  Sort-Object FullName | Select-Object -ExpandProperty FullName)
+$BuildInputLines = foreach ($InputPath in $BuildInputPaths) {
+  if (-not (Test-Path -LiteralPath $InputPath)) {
+    throw "构建输入缺失：$InputPath"
+  }
+  $RelativePath = $InputPath.Substring($ProjectDir.Length).TrimStart('\')
+  $ContentHash = (Get-FileHash -LiteralPath $InputPath -Algorithm SHA256).Hash
+  "$RelativePath`t$ContentHash"
 }
+$HashProvider = [Security.Cryptography.SHA256]::Create()
+try {
+  $BuildInputHash = [BitConverter]::ToString(
+    $HashProvider.ComputeHash([Text.Encoding]::UTF8.GetBytes(($BuildInputLines -join "`n")))
+  ).Replace("-", "")
+} finally {
+  $HashProvider.Dispose()
+}
+$ExistingBuildHash = if (Test-Path -LiteralPath $BuildStamp) {
+  (Get-Content -LiteralPath $BuildStamp -Raw).Trim()
+} else {
+  ""
+}
+$CanReuseExecutable = (-not $Clean) -and
+  (Test-Path -LiteralPath (Join-Path $ProjectDir "dist\MacroFlowStudio.exe")) -and
+  ($ExistingBuildHash -eq $BuildInputHash)
 
-if ($LASTEXITCODE -ne 0) {
-  throw "PyInstaller failed with exit code $LASTEXITCODE"
+if ($CanReuseExecutable) {
+  Write-Host "PyInstaller skipped: source/spec unchanged (use .\build.ps1 -Clean to force rebuild)."
+} else {
+  try {
+    $PyInstallerArgs = @("--noconfirm")
+    if ($Clean) {
+      $PyInstallerArgs += "--clean"
+    }
+    $PyInstallerArgs += "MacroFlowStudio.spec"
+    & $ProjectPython -m PyInstaller @PyInstallerArgs
+  } finally {
+    $env:PYTHONPATH = $PreviousModulePath
+  }
+
+  if ($LASTEXITCODE -ne 0) {
+    throw "PyInstaller failed with exit code $LASTEXITCODE"
+  }
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $BuildStamp) | Out-Null
+  Set-Content -LiteralPath $BuildStamp -Value $BuildInputHash -NoNewline -Encoding ASCII
 }
 
 # Keep the release notes beside the packaged executable in sync with this build.
@@ -57,22 +108,35 @@ $OcrSources = @(
   (Join-Path $ProjectDir "paddle_models")
 )
 New-Item -ItemType Directory -Force -Path $OcrTarget | Out-Null
-# 注意：不要用 Copy-Item -Recurse -Exclude（PowerShell 5.1 会漏拷大量文件），
-# 全量复制后再用 Python 统一清理冗余（__pycache__、paddle/include、*.pyi、*.lib）。
+# 使用 robocopy 增量同步，避免每次构建都重新写入约 0.5GB 的 OCR 组件。
+# /MIR 只作用于 dist\paddle_ocr 下的对应子目录，确保源目录删除的文件也会清理。
 # 注意：paddle/_typing 是运行时真实依赖（paddle.tensor.array 会 from paddle
 # import _typing），不能删；paddle/include 只是 C++ 头文件可以删。
-foreach ($Name in @("paddle", "paddleocr", "paddlex")) {
-  $Source = Join-Path $ProjectDir ".deps\$Name"
+$OcrChanged = $false
+function Sync-OcrDirectory {
+  param(
+    [Parameter(Mandatory = $true)][string]$Source,
+    [Parameter(Mandatory = $true)][string]$Destination
+  )
   if (-not (Test-Path -LiteralPath $Source)) {
     throw "OCR 组件缺失：$Source"
   }
-  Copy-Item -LiteralPath $Source -Destination $OcrTarget -Recurse -Force
+  New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+  & robocopy.exe $Source $Destination /MIR /COPY:DAT /DCOPY:DAT /R:1 /W:1 /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
+  $RobocopyExitCode = $LASTEXITCODE
+  if ($RobocopyExitCode -gt 7) {
+    throw "OCR 组件同步失败：$Source -> $Destination（robocopy $RobocopyExitCode）"
+  }
+  if ($RobocopyExitCode -ne 0) {
+    $script:OcrChanged = $true
+  }
+}
+foreach ($Name in @("paddle", "paddleocr", "paddlex")) {
+  $Source = Join-Path $ProjectDir ".deps\$Name"
+  Sync-OcrDirectory -Source $Source -Destination (Join-Path $OcrTarget $Name)
 }
 $ModelsSource = Join-Path $ProjectDir "paddle_models"
-if (-not (Test-Path -LiteralPath $ModelsSource)) {
-  throw "OCR 组件缺失：$ModelsSource"
-}
-Copy-Item -LiteralPath $ModelsSource -Destination $OcrTarget -Recurse -Force
+Sync-OcrDirectory -Source $ModelsSource -Destination (Join-Path $OcrTarget "paddle_models")
 
 # v1.87.1 起：paddleocr 的运行时第三方依赖（colorlog 等）不在 exe 内，
 # 必须与外置 OCR 引擎一起复制。列表由 build/ocr_deps_setup.py 的
@@ -90,19 +154,18 @@ $OcrDeps = @(
 )
 foreach ($Name in $OcrDeps) {
   $Source = Join-Path $ProjectDir ".deps\$Name"
-  if (-not (Test-Path -LiteralPath $Source)) {
-    throw "OCR 依赖缺失：$Source"
-  }
-  Copy-Item -LiteralPath $Source -Destination $OcrTarget -Recurse -Force
+  Sync-OcrDirectory -Source $Source -Destination (Join-Path $OcrTarget $Name)
   # 兄弟 .libs 目录（pandas.libs/shapely.libs 等装包自身的 DLL 依赖）
   $Libs = Join-Path $ProjectDir ".deps\$Name.libs"
   if (Test-Path -LiteralPath $Libs) {
-    Copy-Item -LiteralPath $Libs -Destination $OcrTarget -Recurse -Force
+    Sync-OcrDirectory -Source $Libs -Destination (Join-Path $OcrTarget "$Name.libs")
   }
   # 同名 dist-info（importlib.metadata 版本检查用）
   Get-ChildItem -LiteralPath (Join-Path $ProjectDir ".deps") -Directory `
     -Filter "$($Name.Replace('_','-'))-*.dist-info" -ErrorAction SilentlyContinue |
-    ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $OcrTarget -Recurse -Force }
+    ForEach-Object {
+      Sync-OcrDirectory -Source $_.FullName -Destination (Join-Path $OcrTarget $_.Name)
+    }
 }
 # 固定元数据清单：目录名与包名不一致的（python_bidi/attrs/pycryptodome 等）
 # 和 paddlex 的 ocr-core 附加依赖检查项（pyclipper/pypdfium2/shapely）。
@@ -116,10 +179,7 @@ $OcrMeta = @(
 )
 foreach ($Meta in $OcrMeta) {
   $Source = Join-Path $ProjectDir ".deps\$Meta"
-  if (-not (Test-Path -LiteralPath $Source)) {
-    throw "OCR 元数据缺失：$Source"
-  }
-  Copy-Item -LiteralPath $Source -Destination $OcrTarget -Recurse -Force
+  Sync-OcrDirectory -Source $Source -Destination (Join-Path $OcrTarget $Meta)
 }
 $OcrCleanupScript = @'
 import os
@@ -137,7 +197,9 @@ for dirpath, dirnames, filenames in os.walk(root, topdown=False):
         if name.endswith((".pyi", ".lib")):
             os.remove(os.path.join(dirpath, name))
 '@
-$OcrCleanupScript -f $OcrTarget | & $ProjectPython -
+if ($OcrChanged) {
+  $OcrCleanupScript -f $OcrTarget | & $ProjectPython -
+}
 $ModelMarker = Join-Path $OcrTarget "paddle_models\PP-OCRv5_mobile_det\inference.pdiparams"
 if (-not (Test-Path -LiteralPath $ModelMarker)) {
   throw "OCR 模型复制失败：$ModelMarker"

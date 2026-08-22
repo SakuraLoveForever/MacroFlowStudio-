@@ -10,7 +10,9 @@ exe 同目录的 paddle_ocr/，由 build.ps1 复制，首次使用 OCR 时才加
 from __future__ import annotations
 
 import os
+import re
 import sys
+import threading
 import unicodedata
 from pathlib import Path
 
@@ -25,9 +27,13 @@ os.environ.setdefault("FLAGS_use_mkldnn", "0")
 os.environ.setdefault("PADDLE_PDX_MODEL_SOURCE", "bos")
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
-from image_match import capture_bgr  # noqa: E402
+from macroflow.core.image_match import capture_bgr  # noqa: E402
 
 _engine = None
+_progress_callback = None
+# 引擎初始化可能被启动预加载线程与播放线程并发触发：首次导入 paddle 全家
+# 可能耗时数十秒，必须串行化，避免两边同时初始化。
+_engine_lock = threading.Lock()
 
 # (模型目录名, model_name 参数名, model_dir 参数名)
 MODEL_DIRS = (
@@ -35,6 +41,21 @@ MODEL_DIRS = (
     ("PP-OCRv5_mobile_rec", "text_recognition_model_name", "text_recognition_model_dir"),
     ("PP-LCNet_x1_0_textline_ori", "textline_orientation_model_name", "textline_orientation_model_dir"),
 )
+
+
+def set_progress_callback(callback) -> None:
+    """Set a best-effort callback for coarse OCR initialization progress."""
+    global _progress_callback
+    _progress_callback = callback
+
+
+def _report_progress(stage: str, percent: int) -> None:
+    callback = _progress_callback
+    if callback is not None:
+        try:
+            callback(stage, max(0, min(100, int(percent))))
+        except Exception:
+            pass
 
 
 def _ocr_component_root() -> Path | None:
@@ -54,13 +75,19 @@ def _models_root() -> Path:
 
 
 def _get_engine():
-    """初始化并返回全局 OCR 引擎（线程安全由调用方的单线程执行保证）。"""
+    """初始化并返回全局 OCR 引擎（线程安全，初始化串行化）。"""
     global _engine
-    if _engine is None:
+    if _engine is not None:
+        return _engine
+    with _engine_lock:
+        if _engine is not None:
+            return _engine
+        _report_progress("准备 OCR 组件", 5)
         ocr_root = _ocr_component_root()
         try:
             if ocr_root is not None:
                 sys.path.insert(0, str(ocr_root))
+            _report_progress("正在导入 PaddleOCR", 20)
             from paddleocr import PaddleOCR
         except ImportError as exc:
             raise RuntimeError(
@@ -69,12 +96,14 @@ def _get_engine():
                 "源码运行请使用 run.bat 启动"
             ) from exc
         model_params = {}
-        for dir_name, name_param, dir_param in MODEL_DIRS:
+        for index, (dir_name, name_param, dir_param) in enumerate(MODEL_DIRS):
+            _report_progress(f"正在检查模型 {index + 1}/{len(MODEL_DIRS)}", 25 + index * 15)
             model_dir = _models_root() / dir_name
             if not (model_dir / "inference.pdiparams").is_file():
                 raise RuntimeError(f"OCR 引擎不可用：缺少模型目录 {model_dir}")
             model_params[name_param] = dir_name
             model_params[dir_param] = str(model_dir)
+        _report_progress("正在创建 OCR 引擎", 75)
         # 关掉文档方向分类/展平（扫描件功能，游戏截图用不到，省两个模型）；
         # det 长边限制 960 避免全屏大图识别过慢（1080p 约 2.5 秒）。
         _engine = PaddleOCR(
@@ -84,6 +113,7 @@ def _get_engine():
             text_det_limit_type="max",
             **model_params,
         )
+        _report_progress("OCR 引擎已加载", 100)
     return _engine
 
 
@@ -171,6 +201,27 @@ def extract_ocr_integer(recognized: str, matches: list[dict]) -> tuple[int | Non
     return (int(raw_digits), raw_digits) if raw_digits else (None, "")
 
 
+def parse_ocr_number_pair(recognized: str, separator: str = "/") -> tuple[int, int] | None:
+    """Parse the first integer pair separated by a configured OCR symbol.
+
+    OCR may return full-width punctuation or spaces around the separator, so
+    both the recognized text and separator are normalized with NFKC first.
+    Only the first integer on each side is used; malformed text returns None.
+    """
+    text = unicodedata.normalize("NFKC", str(recognized or ""))
+    token = unicodedata.normalize("NFKC", str(separator or "")).strip()
+    if not token:
+        return None
+    parts = text.split(token, 1)
+    if len(parts) != 2:
+        return None
+    left = re.search(r"\d+", parts[0])
+    right = re.search(r"\d+", parts[1])
+    if left is None or right is None:
+        return None
+    return int(left.group(0)), int(right.group(0))
+
+
 def matches_expected(recognized: str, expected: str, mode: str = "contains") -> bool:
     """判断识别文字是否命中期望文字。
 
@@ -208,3 +259,24 @@ def format_ocr_observation(
         target = target[:40] + "…"
     actual = f"识别到「{text}」" if text else "未识别到文字"
     return f"{subject} OCR：{actual}；期望「{target}」· {'命中' if matched else '未命中'}"
+
+
+def ocr_match_center(region: tuple[int, int, int, int] | None = None) -> dict:
+    """识别文字命中时构造的伪匹配：点击识别区域用区域中心，全屏用主屏中心。
+
+    文字识别没有模板那样的精确位置，只有识别区域；区域为空（全屏）时
+    退化为主屏中心，保证"点击识别区域"仍有坐标可用。
+    """
+    if region:
+        x, y, w, h = (int(part) for part in region)
+    else:
+        import mss
+
+        with mss.mss() as grabber:
+            monitor = grabber.monitors[1]
+        x, y, w, h = (int(monitor[k]) for k in ("left", "top", "width", "height"))
+    return {
+        "x": x, "y": y, "width": w, "height": h,
+        "center_x": x + w // 2, "center_y": y + h // 2,
+        "score": 1.0,
+    }

@@ -15,28 +15,31 @@ from PyInstaller.archive.readers import CArchiveReader  # noqa: E402
 EXE = sys.argv[1] if len(sys.argv) > 1 else "dist/MacroFlowStudio.exe"
 EXPECT_VERSION = "1.0.0"
 EXPECT_SYMBOLS = {
-    "app": ["open_template_region_manager", "add_module", "add_jump", "_default_global_jump",
+    "app": ["open_template_region_manager", "add_module", "add_jump", "add_ocr_compare", "add_multi_condition_click", "_default_global_jump",
             "_on_restart_workflow_request", "_poll_workflow_stop_for_restart_workflow",
-            "_launch_workflow_restart", "_poll_second_match_click",
-            "_ensure_global_click_foreground",
-            "_resume_workflow_after_global_module",
+            "_launch_workflow_restart", "_restart_workflow_resolved_row",
+            "_evaluate_global_guards", "_evaluate_one_guard", "_build_guard_hit",
+            "_clear_global_guards", "_guard_wait",
+            "_workflow_restart_default_options", "_sync_workflow_restart_default_ui",
+            "_apply_workflow_restart_default",
             "_write_log_line", "_read_workflow_start_delay",
             "_workflow_global_module_registry_state",
-            "redo_action_edit", "_update_redo_button", "_update_action_edit_button",
+            "_update_redo_button", "_update_action_edit_button",
             "_select_all_actions",
             "_toggle_target_activation", "undo_delete_workflow_step",
             "undo_delete_global_module", "_update_workflow_delete_undo_buttons",
             "_select_all_workflow_steps", "_select_all_global_modules",
-            "_wait_workflow_global_scan_turn", "_finish_workflow_global_scan_turn",
-            "_workflow_global_match",
+            "_restore_workflow_scan_foreground",
             "add_workflow_global_module",
-            "_global_ocr_match_data", "recognize_region_with_boxes",
+            "recognize_region_with_boxes",
             "_run_timed_backup", "_run_configured_startup_workflow",
-            "_sync_windows_startup"],
-    "dialogs": ["TemplateRegionManagerDialog", "TemplateRegionFormDialog",
+            "_sync_windows_startup",
+            "rename_workflow", "duplicate_workflow", "_switch_to_workflow",
+            "_restore_workflow_scan_foreground"],
+    "macroflow.ui.dialogs": ["TemplateRegionManagerDialog", "TemplateRegionFormDialog",
                 "ScreenOffsetPicker",
                 "ModulePickerDialog", "BatchModuleScriptDialog", "JumpActionDialog",
-                "ModuleReferenceDelayDialog",
+                "ModuleReferenceDelayDialog", "OcrCompareActionDialog", "MultiConditionClickDialog",
                 "fit_window_to_content",
                 "segment_action_is_blocking", "segment_row_label", "module_manager_label",
                 "module_manager_tag", "_toggle_selected_enabled",
@@ -60,27 +63,27 @@ EXPECT_SYMBOLS = {
                  "_select_all_category", "_action_for_key",
                  "_toggle_sections", "recognize_var", "expected_text_var",
                  "match_mode_var", "recognize_combo"],
-    "storage": ["TEMPLATE_REGIONS_PATH", "load_module_objects",
+    "macroflow.core.storage": ["TEMPLATE_REGIONS_PATH", "load_module_objects",
                 "save_module_objects", "registered_module_object",
                 "module_objects_by_category", "update_module_object",
                  "load_template_regions", "save_template_regions",
                  "registered_template_region", "load_module_images_dir",
                  "save_module_images_dir", "module_image_inventory"],
-    "player": ["registered_module_object", "on_restart_workflow_request",
-               "_execute_second_match", "AdvanceToNextWorkflowStep",
-               "_ocr_match_data", "recognize_region_with_boxes", "matches_expected"],
-    "models": ["NEXT_WORKFLOW_STEP_TARGET_ID", "SCRIPT_START_TARGET_ID"],
-    "image_match": ["find_template", "find_template_in_image",
+    "macroflow.execution.player": ["registered_module_object", "on_restart_workflow_request",
+               "_execute_second_match", "_execute_ocr_compare", "_execute_multi_condition_click", "_multi_condition_matches", "AdvanceToNextWorkflowStep",
+               "ocr_match_center", "recognize_region_with_boxes", "matches_expected"],
+    "macroflow.core.models": ["NEXT_WORKFLOW_STEP_TARGET_ID", "SCRIPT_START_TARGET_ID"],
+    "macroflow.core.image_match": ["find_template", "find_template_in_image",
                     "_estimate_background_color", "_build_ignore_background_mask",
                     "_match_with_mask"],
-    "ocr": ["recognize_region", "recognize_image", "recognize_image_with_boxes",
+    "macroflow.core.ocr": ["recognize_region", "recognize_image", "recognize_image_with_boxes",
             "recognize_region_with_boxes", "find_expected_match", "matches_expected",
-            "format_ocr_observation", "extract_ocr_integer",
+            "format_ocr_observation", "extract_ocr_integer", "parse_ocr_number_pair", "ocr_match_center",
             "_get_engine", "_models_root", "MODEL_DIRS"],
-    "input_guard": ["BlockInput", "WM_MACROFLOW_INPUT", "_dispatch_input",
+    "macroflow.input.input_guard": ["BlockInput", "WM_MACROFLOW_INPUT", "_dispatch_input",
                     "_drain_input_requests"],
-    "wininput": ["set_input_dispatcher", "_send_input_direct",
-                 "MACROFLOW_INPUT_TAG"],
+    "macroflow.input.wininput": ["set_input_dispatcher", "_send_input_direct",
+                 "MACROFLOW_INPUT_TAG", "resolve_window_signature"],
 }
 PYZ_ITEM_MODULE = 0
 PYZ_ITEM_PKG = 1
@@ -105,10 +108,6 @@ def literals_of(code):
                     yield item
         elif hasattr(const, "co_names"):
             yield from literals_of(const)
-
-
-def unmarshal(obj):
-    return marshal.loads(obj) if isinstance(obj, bytes) else obj
 
 
 def read_pyz(data: bytes) -> dict:
@@ -137,12 +136,7 @@ for entry in getattr(image, "DIRECTORY_ENTRY_IMPORT", []):
     ):
         ERRORS.append("EXE 仍导入 COMCTL32 序数 380")
 image.close()
-# 版本号：主模块在 CArchive 根目录。
-app_code = unmarshal(archive.extract("app"))
-if EXPECT_VERSION not in list(literals_of(app_code)):
-    ERRORS.append(f"app 缺少 APP_VERSION 常量 {EXPECT_VERSION}")
-
-# 其余模块在 PYZ.pyz 里。
+# 其余模块在 PYZ.pyz 里（含主窗口模块 macroflow.ui.app）。
 pyz_data = archive.extract("PYZ.pyz")
 if isinstance(pyz_data, tuple):
     pyz_data = pyz_data[0]
@@ -188,10 +182,18 @@ else:
             ERRORS.append(f"缺少 OCR 依赖 {desc}（{rel}）")
 
 
+def unmarshal(obj):
+    return marshal.loads(obj) if isinstance(obj, bytes) else obj
+
+
 def module_code(module):
     raw = extract_pyz_entry(pyz_data, pyz_toc[module])
     return marshal.loads(raw)
 
+
+# 版本号：入口脚本（打包为顶层模块 app）在 CArchive 根目录。
+if EXPECT_VERSION not in list(literals_of(unmarshal(archive.extract("app")))):
+    ERRORS.append(f"app 缺少 APP_VERSION 常量 {EXPECT_VERSION}")
 
 for module, symbols in EXPECT_SYMBOLS.items():
     if module == "app":
@@ -207,13 +209,13 @@ for module, expected_literals in {
     "app": ["关卡", "关卡封装", "切换", "workflow_global", "script_global",
             "wait_text_absent", "ocr_offset_up", "ocr_offset_down",
             "ocr_offset_left", "ocr_offset_right"],
-    "dialogs": ["工作流全局模块", "脚本全局模块", "读取数字", "expected_number",
+    "macroflow.ui.dialogs": ["工作流全局模块", "脚本全局模块", "读取数字", "expected_number",
                 "wait_text_absent",
                 "ocr_offset_up", "ocr_offset_down", "ocr_offset_left", "ocr_offset_right"],
-    "storage": ["workflow_global", "script_global", "number", "workflow_templates.migrated.json",
+    "macroflow.core.storage": ["workflow_global", "script_global", "number", "workflow_templates.migrated.json",
                 "wait_text_absent",
                 "ocr_offset_up", "ocr_offset_down", "ocr_offset_left", "ocr_offset_right"],
-    "player": ["expected_number", "number", "wait_text_absent", "ocr_offset_up", "ocr_offset_down",
+    "macroflow.execution.player": ["expected_number", "number", "wait_text_absent", "ocr_offset_up", "ocr_offset_down",
                "ocr_offset_left", "ocr_offset_right"],
 }.items():
     code = unmarshal(archive.extract("app")) if module == "app" else module_code(module)

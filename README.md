@@ -51,7 +51,7 @@ Record or edit keyboard/mouse actions into scripts, use **image matching / text 
 ## 🎮 Recording & Playback
 
 - **Smart track recording**: records raw relative movement while the cursor is locked at the window center (game view turning, sampled at ≤16 ms); desktop coordinates resume when the cursor leaves the target window (default interval 20 ms, configurable 10–500 ms)
-- Automatically switches the target window to English (US) input method before recording; `F8` always starts a fresh recording detached from the currently open script, saved under a new non-conflicting name
+- Automatically switches the target window to English (US) input method before recording; `F8` re-records directly over the current document (a confirmation appears first when there are unsaved changes); saving over an existing script file asks for confirmation and archives the old version to `backups/overwritten/` (timestamped history) before overwriting
 - **Playback**: start from a specific line, repeat counts, breakpoint resume, multi-click, click at current cursor position
 
 ## 🧩 Script Editor
@@ -64,6 +64,7 @@ Insert the following actions on the Script Editor page; double-click an action t
 | ⌨️ Keyboard / key press | Press / release / tap keys; key can be auto-detected on insert |
 | 📝 Text | Type text |
 | 🖱️ Mouse move / button / click / multi-click | Pick coordinates on screen; left / right / middle button |
+| ↔️ Drag | Press at the start point, drag to the end point and release (screen-pick or manual coordinates); steps / duration / mouse button configurable |
 | 🎡 Wheel | Horizontal / vertical scroll at a given position |
 | 🖼️ Image match | Template matching (see below) |
 | 🔤 OCR text | Offline region text recognition (see below) |
@@ -123,7 +124,7 @@ The Workflow page organizes multiple scripts in order; each step supports:
 | ✅ Enable / disable | Disabled rows are greyed out and skipped without decrementing |
 | 🌐 Global modules | Attach workflow-global modules to a step |
 
-Other operations: select a row to **run from the selected line**; **bulk-set parameters** (counts / wait / interval); step deletion is undoable; rows whose script file is missing are highlighted red with a reason at runtime; **scheduled start** accepts a `YYYY-MM-DD HH:MM:SS` time (empty = run immediately; the app must keep running while waiting).
+Other operations: select a row to **run from the selected line**; **bulk-set parameters** (counts / wait / interval); step deletion is undoable; rows whose script file is missing are highlighted red with a reason at runtime; **scheduled start** accepts a `YYYY-MM-DD HH:MM:SS` time (empty = run immediately; the app must keep running while waiting). At the top of the page you can **✏️ Rename** the current workflow (the file is renamed on save, never overwriting an existing file) or **⧉ Duplicate as a new workflow** (copies the whole workflow into an independent new file and opens the copy right away, so you can derive a new flow without re-inserting steps).
 
 Workflows are plain files (JSON under `workflows/`): New / Open / Save. The UI shows the file content; saving overwrites it directly.
 
@@ -138,10 +139,12 @@ During workflow execution, enabled global modules keep scanning (sharing one scr
 ## 🛠️ Execution & Settings
 
 - **Focus lock mode** (off by default): switches to the English input method + system-level mouse/keyboard lock (`BlockInput`) to block misoperation; `F12` remains the emergency stop
+- **Foreground guard**: while executing, the bound window's foreground is checked every ~500 ms (including during waits and detection polls); when an external window (popups, mis-clicks, third-party programs) steals focus, it is brought back within a few hundred ms, and the run log records the stealing window's title and process name (rate-limited) to help you find the culprit
 - **Foreground window**: independent toggle, brings the target window to the front before execution
 - **Mini windows**: always-on-top mini window for execution / recording (independent toggles) showing progress and the action log
 - **System tray**: closing to tray keeps it running; the tray menu restores the window or quits
 - **Hotkey sounds**: distinct tones for record start/end, run, complete, and emergency stop; testable
+- **Hotkey scripts**: bind a script to a single key (letters, digits, F1–F12, arrows, etc.; F8/F9/F12 and bare modifiers excluded) in the sidebar "Hotkey Scripts → Settings…". During **recording**, pressing the hotkey runs the bound script and its injected keys/mouse get recorded (the hotkey key itself is not); during **execution**, the bound script runs in parallel in its own player without interrupting the current script/workflow; `F12` stops all hotkey scripts too. Bindings persist in `app_settings.json`
 - **Read current coordinates**: shows the live cursor position and the window under it for manual coordinate entry
 - **Resolution scaling**: scripts store the recording machine's virtual screen size; coordinates are scaled automatically on another machine (legacy scripts assumed 1920×1080)
 
@@ -177,13 +180,16 @@ The "Open" button can load JSON scripts from other directories; put templates un
 
 ## 🏗️ Run from Source & Build
 
+Source code lives in the `src/macroflow/` package, organized by domain (`core/` data & primitives, `input/` keyboard/mouse layer, `execution/` player engine, `ui/` interface, `diag/` diagnostics); tests live in `tests/`:
+
 ```powershell
 python -m pip install -r requirements.txt
-python app.py          # run from source
-.\build.ps1            # package: outputs dist\MacroFlowStudio.exe + dist\paddle_ocr\
+.\run.bat                 # run from source (= PYTHONPATH=.deps;src + python -m macroflow.ui.app)
+python tests\test_core.py # run the full unit-test suite
+.\build.ps1               # package: outputs dist\MacroFlowStudio.exe + dist\paddle_ocr\
 ```
 
-Running from source requires Python 3.13 + PaddleOCR dependencies (see run.bat); "OCR Text" requires the PaddleOCR model directory (`paddle_models`).
+Running from source requires Python 3.13 + PaddleOCR dependencies (see run.bat); "OCR Text" requires the PaddleOCR model directory (`paddle_models`). Runtime data (scripts/workflows/settings) is created in the project root when running from source, matching the "next to the exe" layout of packaged builds.
 
 ## 🛡️ Safety Limits
 
@@ -234,7 +240,7 @@ First public release, organized by feature area:
 
 ## 🤝 AI Collaboration Rules
 
-- **DeepSeek**: no need to launch the app to test after changes — no program launches, no GUI-driving scripts to reproduce bugs, no visual checks, no packaged smoke tests. Acceptance = `python test_core.py` all green + successful build + `verify_build.py` passing; bug fixes are located via code reading and unit tests, and the user runs the app to verify afterwards.
+- **DeepSeek**: no need to launch the app to test after changes — no program launches, no GUI-driving scripts to reproduce bugs, no visual checks, no packaged smoke tests. Acceptance = `python tests\test_core.py` all green + successful build + `verify_build.py` passing; bug fixes are located via code reading and unit tests, and the user runs the app to verify afterwards.
 - **GPT**: visual and smoke checks as needed — UI layout / button changes require launching the app to confirm; pure logic changes can be delivered directly; packaged DPI smoke tests on demand.
 
 ---

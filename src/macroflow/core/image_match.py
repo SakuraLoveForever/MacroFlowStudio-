@@ -33,10 +33,11 @@ def capture_bgr(region: tuple[int, int, int, int] | None = None) -> tuple[np.nda
 
 def find_template(template_path: str | Path, threshold: float = 0.85,
                   region: tuple[int, int, int, int] | None = None,
-                  ignore_background: bool = False) -> dict | None:
+                  ignore_background: bool = False,
+                  scale: float = 1.0) -> dict | None:
     screen, origin = capture_bgr(region)
     return find_template_in_image(template_path, screen, threshold, origin,
-                                  region, ignore_background)
+                                  region, ignore_background, scale=scale)
 
 
 def _estimate_background_color(template: np.ndarray) -> np.ndarray | None:
@@ -147,7 +148,8 @@ def find_template_in_image(template_path: str | Path, screen: np.ndarray,
                            threshold: float = 0.85,
                            origin: tuple[int, int] = (0, 0),
                            region: tuple[int, int, int, int] | None = None,
-                           ignore_background: bool = False) -> dict | None:
+                           ignore_background: bool = False,
+                           scale: float = 1.0) -> dict | None:
     """Match one template against an existing screenshot.
 
     Global detectors call this repeatedly with the same full-desktop screenshot,
@@ -156,10 +158,24 @@ def find_template_in_image(template_path: str | Path, screen: np.ndarray,
     ignore_background=True 时只匹配模板上的前景像素（自动识别为文字笔画等
     与背景色不同的内容），背景颜色变化不影响匹配；背景无法自动识别时
     自动回退普通匹配。
+
+    scale 为模板缩放系数：模板录自“录制屏幕”，执行机截图尺寸不同（多屏、
+    分辨率/DPI 差异）时，目标在截图里的像素大小与模板不一致会导致匹配度
+    下降。调用方按 执行机屏幕宽度 / 录制机屏幕宽度 传入，模板先等比缩放到
+    当前尺寸再匹配；匹配结果坐标仍处于截图坐标系，无需换算。
     """
     template = load_image(template_path)
     if template is None:
         raise FileNotFoundError(f"无法读取模板图片：{template_path}")
+    if scale and scale != 1.0:
+        template_height, template_width = template.shape[:2]
+        scaled_height = max(1, round(template_height * scale))
+        scaled_width = max(1, round(template_width * scale))
+        if (scaled_height, scaled_width) != (template_height, template_width):
+            interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+            template = cv2.resize(
+                template, (scaled_width, scaled_height), interpolation=interpolation,
+            )
     search = screen
     search_origin = (int(origin[0]), int(origin[1]))
     if region:
